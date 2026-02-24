@@ -1,0 +1,57 @@
+# --- Dependencias (Node.js) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Variables de Entorno (¡CRÍTICO POR SEGURIDAD!) ---
+# Ignora cualquier archivo que termine en .env o contenga claves
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.env
+.env.*
+
+# --- Builds de Producción (React/Vite/TS) ---
+dist/
+build/
+out/
+coverage/
+
+legacy_reference/
+
+# --- Archivos de Sistema Operativo ---
+.DS_Store
+Thumbs.db
+
+# --- Configuración de IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- AWS / Serverless / Docker ---
+.serverless/
+.aws-sam/
+*.pem
+
+# --- Archivos específicos de tu proyecto Backend ---
+# Si compilas TS a JS en una carpeta 'dist' o 'lib' dentro del backend
+packages/backend/dist/
+packages/backend/coverage/
+
+# --- Archivos específicos de tu proyecto Frontend ---
+packages/frontend/dist/
+packages/frontend/build/
+
+# --- Otros ---
+# Logs de errores locales
+*.log
+.aider*
+
+
+public
+public/

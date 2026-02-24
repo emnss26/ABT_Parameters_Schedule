@@ -1,0 +1,19 @@
+{
+  "name": "abt_bim",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev:frontend": "npm run dev -w packages/frontend",
+    "dev:backend": "node packages/backend/app.js",
+    "install:all": "npm install"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "workspaces": [
+    "packages/*"
+  ]
+}
