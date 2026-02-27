@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useCookies } from "react-cookie";
 import {
@@ -38,6 +38,7 @@ export default function AppLayout({ children, noPadding = false }) {
 
   const [userEmail, setUserEmail] = useState("");
   const [collapsed, setCollapsed] = useState(true);
+  const requestDedupRef = useRef(new Map());
 
   const projectRouteMatch = location.pathname.match(/^\/(parameter-checker|wbs-planner)\/([^/]+)/);
   const activeProjectId = projectRouteMatch?.[2] || null;
@@ -62,8 +63,18 @@ export default function AppLayout({ children, noPadding = false }) {
     ];
   }, [activeProjectId]);
 
+  const shouldSkipDevDuplicateFetch = useCallback((key, windowMs = 1500) => {
+    if (!import.meta.env.DEV) return false;
+    const now = Date.now();
+    const last = requestDedupRef.current.get(key) || 0;
+    requestDedupRef.current.set(key, now);
+    return now - last < windowMs;
+  }, []);
+
   useEffect(() => {
     const loadProfile = async () => {
+      if (shouldSkipDevDuplicateFetch(`auth-userprofile:${cookies.access_token || "anon"}`)) return;
+
       try {
         const res = await fetch(`${backendUrl}/auth/userprofile`, { credentials: "include" });
         if (!res.ok) throw new Error("No auth");
@@ -75,7 +86,7 @@ export default function AppLayout({ children, noPadding = false }) {
     };
 
     loadProfile();
-  }, [cookies.access_token]);
+  }, [cookies.access_token, shouldSkipDevDuplicateFetch]);
 
   const handleLogout = async () => {
     try {

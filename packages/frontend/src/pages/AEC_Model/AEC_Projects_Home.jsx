@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCookies } from "react-cookie";
 import { FolderOpen } from "lucide-react";
@@ -14,9 +14,20 @@ export default function AECProjectsPage() {
   const [loading, setLoading] = useState(true);
   useCookies(["access_token"]);
   const navigate = useNavigate();
+  const requestDedupRef = useRef(new Map());
+
+  const shouldSkipDevDuplicateFetch = useCallback((key, windowMs = 1500) => {
+    if (!import.meta.env.DEV) return false;
+    const now = Date.now();
+    const last = requestDedupRef.current.get(key) || 0;
+    requestDedupRef.current.set(key, now);
+    return now - last < windowMs;
+  }, []);
 
   useEffect(() => {
     const fetchAccProjects = async () => {
+      if (shouldSkipDevDuplicateFetch("graphql-projects")) return;
+
       try {
         setLoading(true);
 
@@ -46,7 +57,7 @@ export default function AECProjectsPage() {
     };
 
     fetchAccProjects();
-  }, [navigate]);
+  }, [navigate, shouldSkipDevDuplicateFetch]);
 
   const openProject = (project, target) => {
     sessionStorage.setItem(

@@ -482,6 +482,7 @@ export default function AECProjectWBSPlannerPage() {
 
   const fileInputRef = useRef(null);
   const resolvedDbIdsRef = useRef({});
+  const requestDedupRef = useRef(new Map());
 
   const apiBase = (backendUrl || "").replace(/\/$/, "");
   const pId = encodeURIComponent(projectId || "");
@@ -491,6 +492,14 @@ export default function AECProjectWBSPlannerPage() {
     if (!c.includes("application/json")) throw new Error((await res.text()).slice(0, 300) || "Invalid response");
     return res.json();
   };
+
+  const shouldSkipDevDuplicateFetch = useCallback((key, windowMs = 1500) => {
+    if (!import.meta.env.DEV) return false;
+    const now = Date.now();
+    const last = requestDedupRef.current.get(key) || 0;
+    requestDedupRef.current.set(key, now);
+    return now - last < windowMs;
+  }, []);
 
   const selectedModel = useMemo(
     () => models.find((m) => String(m.id) === String(selectedModelId)) || null,
@@ -537,6 +546,8 @@ export default function AECProjectWBSPlannerPage() {
 
   const ensureModelsLoaded = useCallback(async () => {
     if (!projectId || models.length > 0) return;
+    if (shouldSkipDevDuplicateFetch(`graphql-models:${pId}`)) return;
+
     setLoadingModels(true);
     try {
       const res = await fetch(`${apiBase}/aec/${pId}/graphql-models`, { credentials: "include" });
@@ -546,7 +557,7 @@ export default function AECProjectWBSPlannerPage() {
     } finally {
       setLoadingModels(false);
     }
-  }, [projectId, models.length, apiBase, pId]);
+  }, [projectId, models.length, apiBase, pId, shouldSkipDevDuplicateFetch]);
 
   const fetchLatestWbs = useCallback(
     async (modelId) => {

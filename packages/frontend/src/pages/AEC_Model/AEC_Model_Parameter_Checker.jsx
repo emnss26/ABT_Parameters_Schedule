@@ -68,6 +68,7 @@ export default function AECModelParameterCheckerPage() {
   const bootstrappedProjectRef = useRef("")
   const analysisRunRef = useRef(0)
   const dbLoadRunRef = useRef(0)
+  const requestDedupRef = useRef(new Map())
 
   const selectionStorageKey = `parameter_checker_selected_model_${projectId || "unknown"}`
 
@@ -104,6 +105,14 @@ export default function AECModelParameterCheckerPage() {
     }
     return res.json()
   }
+
+  const shouldSkipDevDuplicateFetch = useCallback((key, windowMs = 1500) => {
+    if (!import.meta.env.DEV) return false
+    const now = Date.now()
+    const last = requestDedupRef.current.get(key) || 0
+    requestDedupRef.current.set(key, now)
+    return now - last < windowMs
+  }, [])
 
   const selectedModel = useMemo(
     () => models.find((model) => String(model.id) === String(selectedModelId)) || null,
@@ -188,6 +197,7 @@ export default function AECModelParameterCheckerPage() {
 
   const ensureModelsLoaded = useCallback(async () => {
     if (!projectId || models.length > 0) return
+    if (shouldSkipDevDuplicateFetch(`graphql-models:${pId}`)) return
 
     setLoadingModels(true)
     try {
@@ -203,7 +213,7 @@ export default function AECModelParameterCheckerPage() {
     } finally {
       setLoadingModels(false)
     }
-  }, [apiBase, pId, projectId, models.length])
+  }, [apiBase, pId, projectId, models.length, shouldSkipDevDuplicateFetch])
 
   const fetchCategoryParameters = useCallback(
     async ({ modelId, categoryQuery }) => {

@@ -4,6 +4,17 @@ const { logGraphQlResponseSize } = require("../../../utils/monitoring/graphql.re
 const AEC_GRAPHQL_URL = "https://developer.api.autodesk.com/aec/graphql"
 const ELEMENT_PAGE_LIMIT = 500
 const BULK_CONTEXT_FILTER = "'property.name.Element Context'==Instance"
+const WITH_CONTEXT_COVERAGE_THRESHOLD = Number.parseFloat(
+  process.env.AEC_WITH_CONTEXT_COVERAGE_THRESHOLD || "0.7"
+)
+const ELEMENT_GROUPS_CACHE_TTL_MS = Number.parseInt(
+  process.env.AEC_ELEMENT_GROUPS_CACHE_TTL_MS || String(15 * 60 * 1000),
+  10
+)
+const DEFAULT_TOKEN_SCOPE = "__default_scope__"
+
+const elementGroupsCache = new Map()
+const elementGroupsInFlight = new Map()
 
 const CATEGORY_ALIASES = {
   "Curtain Panels / Mullions": [
@@ -36,7 +47,6 @@ const toText = (value) => {
   return ""
 }
 
-const normalize = (value) => String(value || "").trim().toLowerCase()
 const normalizeKey = (value) =>
   toText(value)
     .toLowerCase()
@@ -136,6 +146,59 @@ const graphQlPost = async (token, query, variables) => {
   }
 
   return data?.data || {}
+}
+
+const clampCoverageThreshold = (value) => {
+  if (!Number.isFinite(value)) return 0.7
+  if (value < 0) return 0
+  if (value > 1) return 1
+  return value
+}
+
+const getTokenScope = (token) => {
+  const raw = toText(token)
+  if (!raw) return DEFAULT_TOKEN_SCOPE
+
+  const parts = raw.split(".")
+  if (parts.length < 2) return raw.slice(0, 24) || DEFAULT_TOKEN_SCOPE
+
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"))
+    return (
+      toText(payload?.sub) ||
+      toText(payload?.client_id) ||
+      toText(payload?.aud) ||
+      raw.slice(0, 24) ||
+      DEFAULT_TOKEN_SCOPE
+    )
+  } catch (_) {
+    return raw.slice(0, 24) || DEFAULT_TOKEN_SCOPE
+  }
+}
+
+const buildElementGroupsCacheKey = (projectId, token) => `${toText(projectId)}::${getTokenScope(token)}`
+
+const getCachedElementGroups = (cacheKey) => {
+  const cached = elementGroupsCache.get(cacheKey)
+  if (!cached) return null
+
+  if (cached.expiresAt <= Date.now()) {
+    elementGroupsCache.delete(cacheKey)
+    return null
+  }
+
+  return cached.value
+}
+
+const setCachedElementGroups = (cacheKey, value) => {
+  const minTtlMs = 10 * 60 * 1000
+  const maxTtlMs = 30 * 60 * 1000
+  const ttlMs = Math.min(maxTtlMs, Math.max(minTtlMs, ELEMENT_GROUPS_CACHE_TTL_MS))
+
+  elementGroupsCache.set(cacheKey, {
+    value,
+    expiresAt: Date.now() + ttlMs,
+  })
 }
 
 const mapElementToRow = (element) => {
@@ -447,6 +510,7 @@ const selectBestRows = ({ withContextRows = [], withoutContextRows = [] }) => {
 
 const resolveRowsForCategory = async ({ token, modelId, category }) => {
   const candidates = buildCategoryCandidates(category)
+  const coverageThreshold = clampCoverageThreshold(WITH_CONTEXT_COVERAGE_THRESHOLD)
 
   const withContext = (candidate) =>
     `property.name.category==${quoteIfNeeded(candidate)} and ${BULK_CONTEXT_FILTER}`
@@ -458,10 +522,8 @@ const resolveRowsForCategory = async ({ token, modelId, category }) => {
 
   for (const candidate of candidates) {
     const withFilter = withContext(candidate)
-    const withoutFilter = withoutContext(candidate)
 
     let withRows = null
-    let withoutRows = null
 
     try {
       withRows = await fetchRowsByPropertyFilter({
@@ -477,6 +539,21 @@ const resolveRowsForCategory = async ({ token, modelId, category }) => {
       }
     }
 
+    const hasSuccessfulAttempt = Array.isArray(withRows)
+    const safeWithRows = Array.isArray(withRows) ? withRows : []
+    const withContextInstances = dedupeRows(safeWithRows.filter(isInstanceRow))
+    const withCoverage = assemblyCoverage(withContextInstances)
+
+    if (withContextInstances.length > 0 && withCoverage >= coverageThreshold) {
+      return {
+        rows: withContextInstances,
+        resolvedCategoryToken: candidate,
+        filterQueryUsed: withFilter,
+      }
+    }
+
+    const withoutFilter = withoutContext(candidate)
+    let withoutRows = null
     try {
       withoutRows = await fetchRowsByPropertyFilter({
         token,
@@ -491,8 +568,6 @@ const resolveRowsForCategory = async ({ token, modelId, category }) => {
       }
     }
 
-    const hasSuccessfulAttempt = Array.isArray(withRows) || Array.isArray(withoutRows)
-    const safeWithRows = Array.isArray(withRows) ? withRows : []
     const safeWithoutRows = Array.isArray(withoutRows) ? withoutRows : []
 
     const selection = selectBestRows({
@@ -543,7 +618,6 @@ const fetchRowsByPropertyFilter = async ({ token, elementGroupId, propertyFilter
         pagination { cursor pageSize }
         results {
           id
-          name
           alternativeIdentifiers {
             revitElementId
             externalElementId
@@ -552,12 +626,6 @@ const fetchRowsByPropertyFilter = async ({ token, elementGroupId, propertyFilter
             results {
               name
               value
-              definition {
-                id
-                name
-                description
-                specification
-              }
             }
           }
         }
@@ -586,6 +654,63 @@ const fetchRowsByPropertyFilter = async ({ token, elementGroupId, propertyFilter
   return rows
 }
 
+const fetchElementGroupsByProject = async ({ token, projectId }) => {
+  const elementGroupsQuery = `
+    query GetElementGroupsByProject($projectId: ID!, $cursor: String) {
+      elementGroupsByProject(projectId: $projectId, pagination: { cursor: $cursor }) {
+        pagination { pageSize cursor }
+        results {
+          id
+          name
+        }
+      }
+    }
+  `
+
+  const allElementGroups = []
+  let cursor = null
+
+  while (true) {
+    const gqlData = await graphQlPost(token, elementGroupsQuery, {
+      projectId,
+      cursor,
+    })
+
+    const payload = gqlData?.elementGroupsByProject
+    const page = Array.isArray(payload?.results) ? payload.results : []
+    if (page.length) allElementGroups.push(...page)
+
+    cursor = payload?.pagination?.cursor || null
+    if (!cursor) break
+  }
+
+  return allElementGroups
+}
+
+const fetchElementGroupsByProjectCached = async ({ token, projectId }) => {
+  const cacheKey = buildElementGroupsCacheKey(projectId, token)
+  const cached = getCachedElementGroups(cacheKey)
+  if (cached) return cached
+
+  if (elementGroupsInFlight.has(cacheKey)) {
+    return elementGroupsInFlight.get(cacheKey)
+  }
+
+  const inFlight = (async () => {
+    const groups = await fetchElementGroupsByProject({ token, projectId })
+    setCachedElementGroups(cacheKey, groups)
+    return groups
+  })()
+
+  elementGroupsInFlight.set(cacheKey, inFlight)
+
+  try {
+    return await inFlight
+  } finally {
+    elementGroupsInFlight.delete(cacheKey)
+  }
+}
+
 async function fetchModelParametersByCategory(token, projectId, modelId, category) {
   if (!token) throw new Error("Missing APS access token")
   if (!projectId) throw new Error("Missing projectId")
@@ -594,51 +719,11 @@ async function fetchModelParametersByCategory(token, projectId, modelId, categor
   const normalizedCategory = String(category || "").trim()
   if (!normalizedCategory) throw new Error("Missing category")
 
-  const elementGroupsQuery = `
-    query GetElementGroupsByProject($projectId: ID!, $cursor: String) {
-      elementGroupsByProject(projectId: $projectId, pagination: { cursor: $cursor }) {
-        pagination { pageSize cursor }
-        results {
-          id
-          name
-          alternativeIdentifiers {
-            fileUrn
-            fileVersionUrn
-          }
-          propertyDefinitions {
-            results {
-              id
-              name
-              description
-              specification
-            }
-          }
-        }
-      }
-    }
-  `
-
-  const allElementGroups = []
-  let groupsCursor = null
-
-  while (true) {
-    const gqlData = await graphQlPost(token, elementGroupsQuery, {
-      projectId,
-      cursor: groupsCursor,
-    })
-
-    const payload = gqlData?.elementGroupsByProject
-    const page = Array.isArray(payload?.results) ? payload.results : []
-    if (page.length) allElementGroups.push(...page)
-
-    groupsCursor = payload?.pagination?.cursor || null
-    if (!groupsCursor) break
-  }
-
+  const allElementGroups = await fetchElementGroupsByProjectCached({
+    token,
+    projectId,
+  })
   const selectedModel = allElementGroups.find((group) => String(group?.id) === String(modelId)) || null
-  const propertyDefinitions = Array.isArray(selectedModel?.propertyDefinitions?.results)
-    ? selectedModel.propertyDefinitions.results
-    : []
 
   const resolved = await resolveRowsForCategory({
     token,
@@ -655,13 +740,12 @@ async function fetchModelParametersByCategory(token, projectId, modelId, categor
 
   return {
     modelId,
-    allelements:allElementGroups,
     modelName: selectedModel?.name || null,
     category: normalizedCategory,
     resolvedCategoryToken: resolved.resolvedCategoryToken,
     filterQueryUsed: resolved.filterQueryUsed,
     rows,
-    propertyDefinitions,
+    propertyDefinitions: [],
     summary: {
       totalElements,
       averageCompliancePct,

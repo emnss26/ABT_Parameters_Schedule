@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useCookies } from "react-cookie";
 import { User } from "lucide-react";
@@ -10,9 +10,20 @@ export default function GeneralLayout({ children, noPadding = false }) {
   const [cookies, , removeCookie] = useCookies(["access_token"]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [userEmail, setUserEmail] = useState("");
+  const requestDedupRef = useRef(new Map());
+
+  const shouldSkipDevDuplicateFetch = useCallback((key, windowMs = 1500) => {
+    if (!import.meta.env.DEV) return false;
+    const now = Date.now();
+    const last = requestDedupRef.current.get(key) || 0;
+    requestDedupRef.current.set(key, now);
+    return now - last < windowMs;
+  }, []);
 
   useEffect(() => {
     const loadUser = async () => {
+      if (shouldSkipDevDuplicateFetch(`auth-userprofile:${cookies.access_token || "anon"}`)) return;
+
       try {
         const res = await fetch(`${backendUrl}/auth/userprofile`, { credentials: "include" });
         if (!res.ok) throw new Error("No auth");
@@ -24,7 +35,7 @@ export default function GeneralLayout({ children, noPadding = false }) {
     };
 
     loadUser();
-  }, [cookies.access_token]);
+  }, [cookies.access_token, shouldSkipDevDuplicateFetch]);
 
   const handleLogout = async () => {
     try {
