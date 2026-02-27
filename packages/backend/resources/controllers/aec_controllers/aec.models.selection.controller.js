@@ -1,5 +1,4 @@
 const knex = require("../../../utils/db/knex");
-const { ensureTables } = require("../../../utils/db/ensureTables");
 
 /**
  * Body:
@@ -10,8 +9,6 @@ const setSelectedModels = async (req, res, next) => {
   const { modelIds = [], modelMeta = [] } = req.body || {};
 
   try {
-    await ensureTables(knex);
-
     const ids = Array.isArray(modelIds) ? modelIds : [];
     const meta = Array.isArray(modelMeta) ? modelMeta : [];
 
@@ -30,7 +27,6 @@ const setSelectedModels = async (req, res, next) => {
             project_id: projectId,
             model_id: id,
             model_name: nameById.get(String(id)) || null,
-    
           }))
         );
       }
@@ -52,16 +48,9 @@ const getSelectedModels = async (req, res, next) => {
   const { projectId } = req.params;
 
   try {
-    await ensureTables(knex);
-
-    // ✅ detecta columnas reales (si la DB está vieja)
-    const info = await knex("model_selection").columnInfo();
-    const cols = ["model_id"];
-    if (info.model_name) cols.push("model_name"); // solo si existe
-
     const rows = await knex("model_selection")
       .where({ project_id: projectId })
-      .select(cols)
+      .select(["model_id", "model_name"])
       .orderBy("id", "asc");
 
     return res.json({

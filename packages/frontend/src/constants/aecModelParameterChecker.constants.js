@@ -59,7 +59,7 @@ export const PARAMETER_CHECKER_DISCIPLINES = [
       {
         id: "structure_rebar",
         name: "Structural Rebar (Refuerzo)",
-        query: "Structural Rebar",
+        query: "Structural Rebars",
       },
     ],
     keyParameters: [

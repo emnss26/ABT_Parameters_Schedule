@@ -1,31 +1,32 @@
-// utils/dm/dm.folderTree.js
 const { fetchTopFoldersRest } = require("../../resources/libs/dm/dm.get.topfolder.js");
 const { fetchSubFoldersRest } = require("../../resources/libs/dm/dm.get.subfolder.js");
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function createWorkQueue(concurrency) {
   let running = 0;
-  const q = [];
+  const queue = [];
   let idleResolve = null;
 
   const onIdle = () =>
-    new Promise((res) => {
-      if (running === 0 && q.length === 0) return res();
-      idleResolve = res;
+    new Promise((resolve) => {
+      if (running === 0 && queue.length === 0) return resolve();
+      idleResolve = resolve;
     });
 
   const pump = () => {
-    while (running < concurrency && q.length) {
-      const fn = q.shift();
-      running++;
+    while (running < concurrency && queue.length) {
+      const task = queue.shift();
+      running += 1;
+
       Promise.resolve()
-        .then(fn)
-        .catch(() => {}) // el error se maneja dentro del task
+        .then(task)
+        .catch(() => {})
         .finally(() => {
-          running--;
+          running -= 1;
           pump();
-          if (running === 0 && q.length === 0 && idleResolve) {
+
+          if (running === 0 && queue.length === 0 && idleResolve) {
             idleResolve();
             idleResolve = null;
           }
@@ -33,8 +34,8 @@ function createWorkQueue(concurrency) {
     }
   };
 
-  const push = (fn) => {
-    q.push(fn);
+  const push = (task) => {
+    queue.push(task);
     pump();
   };
 
@@ -49,13 +50,13 @@ function createRateLimiter({ maxConcurrent = 4, minTimeMs = 80 }) {
 
   const acquire = async () => {
     while (active >= maxConcurrent) {
-      await new Promise((res) => waiters.push(res));
+      await new Promise((resolve) => waiters.push(resolve));
     }
-    active++;
+    active += 1;
   };
 
   const release = () => {
-    active--;
+    active -= 1;
     if (waiters.length) waiters.shift()();
   };
 
@@ -63,8 +64,8 @@ function createRateLimiter({ maxConcurrent = 4, minTimeMs = 80 }) {
     const now = Date.now();
     if (now < pauseUntil) await sleep(pauseUntil - now);
 
-    const since = now - lastStart;
-    if (since < minTimeMs) await sleep(minTimeMs - since);
+    const elapsed = now - lastStart;
+    if (elapsed < minTimeMs) await sleep(minTimeMs - elapsed);
 
     lastStart = Date.now();
   };
@@ -89,22 +90,26 @@ function createRateLimiter({ maxConcurrent = 4, minTimeMs = 80 }) {
 async function fetchFolderTree(token, projectId) {
   const dmId = projectId;
 
-  // Ajustables por env sin tocar código
-  const MAX_CONCURRENCY = Number(process.env.DM_TREE_CONCURRENCY || 4); // requests concurrentes reales
-  const MIN_TIME_MS = Number(process.env.DM_TREE_MIN_TIME_MS || 80);    // spacing entre requests
+  // Tunable via environment variables without code changes.
+  const MAX_CONCURRENCY = Number(process.env.DM_TREE_CONCURRENCY || 4);
+  const MIN_TIME_MS = Number(process.env.DM_TREE_MIN_TIME_MS || 80);
   const RETRIES = Number(process.env.DM_TREE_RETRIES || 6);
 
-  const limiter = createRateLimiter({ maxConcurrent: MAX_CONCURRENCY, minTimeMs: MIN_TIME_MS });
-  const work = createWorkQueue(MAX_CONCURRENCY);
+  const limiter = createRateLimiter({
+    maxConcurrent: MAX_CONCURRENCY,
+    minTimeMs: MIN_TIME_MS,
+  });
+  const queue = createWorkQueue(MAX_CONCURRENCY);
 
-  // Cachea children por folderId (y comparte el mismo Promise) => evita llamadas duplicadas
-  const childrenPromiseCache = new Map(); // folderId -> Promise<childrenInfo[]>
+  // Cache by folderId and reuse in-flight promises to avoid duplicate requests.
+  const childrenPromiseCache = new Map();
 
-  // Nodos únicos por id (si un id aparece 2 veces, no duplicas llamadas ni reconstrucción)
-  const nodeById = new Map(); // id -> nodeRef
+  // Keep one node instance per folder id to avoid duplicated subtree builds.
+  const nodeById = new Map();
 
   const getNode = (info) => {
     if (nodeById.has(info.id)) return nodeById.get(info.id);
+
     const node = {
       id: info.id,
       name: info.name,
@@ -112,57 +117,55 @@ async function fetchFolderTree(token, projectId) {
       type: "folders",
       children: [],
     };
+
     nodeById.set(info.id, node);
     return node;
   };
 
   const retry = async (operation, label) => {
-    for (let attempt = 0; attempt < RETRIES; attempt++) {
+    for (let attempt = 0; attempt < RETRIES; attempt += 1) {
       try {
         return await limiter.run(operation);
       } catch (error) {
         const status = error.response?.status;
-        const isRetryable = status === 429 || status >= 500;
+        const retryable = status === 429 || status >= 500;
+        if (!retryable || attempt === RETRIES - 1) throw error;
 
-        if (!isRetryable || attempt === RETRIES - 1) throw error;
-
-        // APS recomienda respetar Retry-After cuando viene en 429 :contentReference[oaicite:2]{index=2}
-        const ra = Number(error.response?.headers?.["retry-after"]);
-        let waitMs = (!Number.isNaN(ra) && ra > 0)
-          ? Math.ceil(ra * 1000)
+        const retryAfter = Number(error.response?.headers?.["retry-after"]);
+        let waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.ceil(retryAfter * 1000)
           : 1000 * Math.pow(2, attempt);
 
-        // jitter pequeño para evitar “trombonazo” cuando varios workers reintentan a la vez
         waitMs += Math.floor(Math.random() * 250);
-
         limiter.pause(waitMs);
-        console.warn(`⏳ APS ${status} en "${label}". Retry ${attempt + 1}/${RETRIES} en ${waitMs}ms`);
+        console.warn(`APS ${status} on "${label}". Retry ${attempt + 1}/${RETRIES} in ${waitMs}ms.`);
         await sleep(waitMs);
       }
     }
+
+    return null;
   };
 
   const getChildrenInfo = (folderNode) => {
-    if (childrenPromiseCache.has(folderNode.id)) return childrenPromiseCache.get(folderNode.id);
+    if (childrenPromiseCache.has(folderNode.id)) {
+      return childrenPromiseCache.get(folderNode.id);
+    }
 
-    const p = retry(
+    const promise = retry(
       () => fetchSubFoldersRest(token, dmId, folderNode.id),
       folderNode.name || folderNode.id
     );
 
-    childrenPromiseCache.set(folderNode.id, p);
-    return p;
+    childrenPromiseCache.set(folderNode.id, promise);
+    return promise;
   };
 
-  // 1) Roots
   const topInfos = await retry(() => fetchTopFoldersRest(token, dmId), "topFolders");
   const roots = (topInfos || []).map(getNode);
 
-  // 2) Expand con cola global (sin multiplicación por recursión)
-  const expanded = new Set(); // folderId ya expandido
-
+  const expanded = new Set();
   const expand = (node) => {
-    work.push(async () => {
+    queue.push(async () => {
       if (expanded.has(node.id)) return;
       expanded.add(node.id);
 
@@ -170,18 +173,17 @@ async function fetchFolderTree(token, projectId) {
         const childrenInfos = await getChildrenInfo(node);
         const childNodes = (childrenInfos || []).map(getNode);
         node.children = childNodes;
-
-        for (const child of childNodes) expand(child);
-      } catch (e) {
-        console.error(`⚠️ Error irrecuperable en carpeta "${node.name}". Se omiten sus hijos.`);
+        childNodes.forEach((child) => expand(child));
+      } catch (_err) {
+        console.error(`Unrecoverable folder error on "${node.name}". Children will be skipped.`);
         node.children = [];
         node.error = "Load failed";
       }
     });
   };
 
-  for (const r of roots) expand(r);
-  await work.onIdle();
+  roots.forEach((root) => expand(root));
+  await queue.onIdle();
 
   return roots;
 }

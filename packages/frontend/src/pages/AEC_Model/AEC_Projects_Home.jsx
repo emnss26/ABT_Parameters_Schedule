@@ -34,12 +34,12 @@ export default function AECProjectsPage() {
         if (!result.success && result.error) {
           throw new Error(result.error);
         }
-        //console.log('Project Data', result)
+
         setProjects(result.data?.aecProjects || []);
         setError("");
       } catch (err) {
         console.error(err);
-        setError("No se pudieron cargar los proyectos. Revisa tu conexión.");
+        setError("No se pudieron cargar los proyectos. Revisa tu conexion.");
       } finally {
         setLoading(false);
       }
@@ -47,6 +47,15 @@ export default function AECProjectsPage() {
 
     fetchAccProjects();
   }, [navigate]);
+
+  const openProject = (project, target) => {
+    sessionStorage.setItem(
+      "altProjectId",
+      project.alternativeIdentifiers?.dataManagementAPIProjectId
+    );
+    sessionStorage.setItem("projectName", project.name);
+    navigate(`/${target}/${project.id}`);
+  };
 
   return (
     <AppLayout>
@@ -60,23 +69,19 @@ export default function AECProjectsPage() {
         </div>
 
         <div className="flex w-full flex-col items-center justify-center">
-          <h2 className="mb-6 text-2xl font-bold tracking-tight text-gray-800">
-            Lista de Proyectos
-          </h2>
+          <h2 className="mb-6 text-2xl font-bold tracking-tight text-gray-800">Lista de Proyectos</h2>
 
           <div className="relative flex min-h-[400px] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-1 shadow-xl">
             {loading ? (
               <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/90 backdrop-blur-sm animate-in fade-in duration-300">
                 <AbitatLogoLoader className="scale-75" />
-                <p className="mt-4 animate-pulse text-sm font-medium text-gray-500">
-                  Cargando...
-                </p>
+                <p className="mt-4 animate-pulse text-sm font-medium text-gray-500">Cargando...</p>
               </div>
             ) : null}
 
             {error && !loading ? (
               <div className="flex h-full flex-col items-center justify-center p-6 text-center">
-                <div className="mb-2 text-lg text-red-500">⚠️</div>
+                <div className="mb-2 text-lg text-red-500">Aviso</div>
                 <p className="font-medium text-red-600">{error}</p>
                 <button
                   onClick={() => window.location.reload()}
@@ -88,36 +93,34 @@ export default function AECProjectsPage() {
             ) : null}
 
             {!loading && !error ? (
-              <div
-                className="custom-scrollbar flex-1 overflow-y-auto p-4"
-                style={{ maxHeight: "60vh" }}
-              >
+              <div className="custom-scrollbar flex-1 overflow-y-auto p-4" style={{ maxHeight: "60vh" }}>
                 {projects.length > 0 ? (
                   <ul className="flex flex-col gap-3">
-                    {projects.map((p) => (
+                    {projects.map((project) => (
                       <li
-                        key={p.id}
+                        key={project.id}
                         className="group flex items-center justify-between rounded-xl border border-gray-100 bg-white p-4 transition-all duration-300 hover:border-[rgb(170,32,47)]/30 hover:shadow-md"
                       >
                         <div className="pr-4">
                           <h3 className="text-sm font-bold text-gray-800 transition-colors group-hover:text-[rgb(170,32,47)]">
-                            {p.name}
+                            {project.name}
                           </h3>
                         </div>
 
-                        <button
-                          className="whitespace-nowrap rounded-lg bg-[rgb(170,32,47)] px-4 py-2 text-xs font-semibold text-white opacity-0 shadow-sm transition-all duration-300 hover:bg-[rgb(150,28,42)] hover:shadow-md active:scale-95 group-hover:translate-x-0 group-hover:opacity-100 translate-x-2"
-                          onClick={() => {
-                            sessionStorage.setItem(
-                              "altProjectId",
-                              p.alternativeIdentifiers?.dataManagementAPIProjectId
-                            );
-                            sessionStorage.setItem("projectName", p.name);
-                            navigate(`/parameter-checker/${p.id}`);
-                          }}
-                        >
-                          Abrir Proyecto →
-                        </button>
+                        <div className="flex translate-x-2 gap-2 opacity-0 transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100">
+                          <button
+                            className="whitespace-nowrap rounded-lg bg-[rgb(170,32,47)] px-3 py-2 text-[11px] font-semibold text-white shadow-sm transition-all duration-300 hover:bg-[rgb(150,28,42)] hover:shadow-md active:scale-95"
+                            onClick={() => openProject(project, "parameter-checker")}
+                          >
+                            Parameter Checker
+                          </button>
+                          <button
+                            className="whitespace-nowrap rounded-lg border border-[rgb(170,32,47)] px-3 py-2 text-[11px] font-semibold text-[rgb(170,32,47)] shadow-sm transition-all duration-300 hover:bg-[rgb(170,32,47)] hover:text-white hover:shadow-md active:scale-95"
+                            onClick={() => openProject(project, "wbs-planner")}
+                          >
+                            WBS Planner
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>

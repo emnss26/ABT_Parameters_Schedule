@@ -5,6 +5,7 @@ import HomePage from './pages/General_Pages/Home.Page'
 import LoginPage from './pages/General_Pages/Login.Page';
 import AECProjectsPage from './pages/AEC_Model/AEC_Projects_Home';
 import AECModelParameterCheckerPage from "./pages/AEC_Model/AEC_Model_Parameter_Checker";
+import AECProjectWBSPlannerPage from "./pages/AEC_Model/AEC_Project_WBS_Planner";
 
 
 import NotFoundPage from './pages/General_Pages/NotFound.Page'; 
@@ -24,6 +25,7 @@ function App() {
           <Route path="/aec-projects" element={<AECProjectsPage />} />
 
           <Route path="/parameter-checker/:projectId" element={<AECModelParameterCheckerPage />} />
+          <Route path="/wbs-planner/:projectId" element={<AECProjectWBSPlannerPage />} />
 
           <Route path="*" element={<NotFoundPage />} />
         

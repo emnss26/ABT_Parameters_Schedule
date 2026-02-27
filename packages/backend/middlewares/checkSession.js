@@ -27,14 +27,14 @@ async function checkSession(req, res, next) {
           }
         }
       } catch (tokenError) {
-        // Token inválido o expirado, intentar refresh
-        console.log("Access token invalid:", tokenError.message)
+        // Access token is invalid or expired; continue with refresh flow.
+        // console.log("Access token invalid:", tokenError.message)
       }
     }
 
     // Access token missing/expired: attempt refresh using refresh token.
     if (refreshToken) {
-      console.log("Session: Token expired or missing. Attempting refresh...")
+      // console.log("Session: Token expired or missing. Attempting refresh...")
 
       const params = new URLSearchParams()
       params.append("client_id", config.aps.clientId)
@@ -84,3 +84,5 @@ async function checkSession(req, res, next) {
 }
 
 module.exports = checkSession
+
+

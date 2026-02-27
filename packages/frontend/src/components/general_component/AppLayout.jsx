@@ -8,6 +8,7 @@ import {
   ChevronRight,
   FolderKanban,
   Home,
+  ListTree,
   LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -38,7 +39,7 @@ export default function AppLayout({ children, noPadding = false }) {
   const [userEmail, setUserEmail] = useState("");
   const [collapsed, setCollapsed] = useState(true);
 
-  const projectRouteMatch = location.pathname.match(/^\/(parameter-checker)\/([^/]+)/);
+  const projectRouteMatch = location.pathname.match(/^\/(parameter-checker|wbs-planner)\/([^/]+)/);
   const activeProjectId = projectRouteMatch?.[2] || null;
   const showSidebar = Boolean(activeProjectId);
 
@@ -51,6 +52,12 @@ export default function AppLayout({ children, noPadding = false }) {
         label: "Parameter Checker",
         icon: Blocks,
         href: `/parameter-checker/${activeProjectId}`,
+      },
+      {
+        id: "wbs-planner",
+        label: "WBS Planner",
+        icon: ListTree,
+        href: `/wbs-planner/${activeProjectId}`,
       },
     ];
   }, [activeProjectId]);
@@ -84,10 +91,12 @@ export default function AppLayout({ children, noPadding = false }) {
     if (item.id === "projects") {
       return (
         location.pathname === "/aec-projects" ||
-        location.pathname.startsWith("/parameter-checker/")
+        location.pathname.startsWith("/parameter-checker/") ||
+        location.pathname.startsWith("/wbs-planner/")
       );
     }
     if (item.id === "parameter-checker") return location.pathname.startsWith("/parameter-checker/");
+    if (item.id === "wbs-planner") return location.pathname.startsWith("/wbs-planner/");
     return item.href === location.pathname;
   };
 
@@ -167,7 +176,7 @@ export default function AppLayout({ children, noPadding = false }) {
               onClick={() => setCollapsed((v) => !v)}
             >
               {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-              {!collapsed && <span className="ml-2 text-[10px] font-bold uppercase tracking-wider">Colapsar menú</span>}
+              {!collapsed && <span className="ml-2 text-[10px] font-bold uppercase tracking-wider">Colapsar menu</span>}
             </Button>
           </div>
         </aside>
@@ -216,7 +225,7 @@ export default function AppLayout({ children, noPadding = false }) {
                   onClick={handleLogout}
                   className="cursor-pointer text-red-600 focus:bg-red-50 focus:text-red-600"
                 >
-                  <LogOut className="mr-2 h-4 w-4" /> Cerrar Sesión
+                  <LogOut className="mr-2 h-4 w-4" /> Cerrar Sesion
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

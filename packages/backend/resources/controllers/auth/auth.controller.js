@@ -47,7 +47,7 @@ const GetThreeLegged = async (req, res, next) => {
 
     res.cookie("refresh_token", token.refresh_token, cookieOptions)
 
-    console.log("Three-legged token set in cookies.")
+    // console.log("Three-legged token set in cookies.")
 
     return res.redirect(`${frontendUrl}/aec-projects`)
   } catch (err) {
@@ -105,3 +105,4 @@ module.exports = {
   GetToken,
   PostLogout,
 }
+

@@ -9,6 +9,7 @@ import AppLayout from "@/components/general_component/AppLayout"
 import AbitatLogoLoader from "@/components/general_component/AbitatLogoLoader"
 import SelectModelsModal from "@/components/aec_model_components/SelectModelModal"
 import ParameterComplianceTable from "@/components/aec_model_components/ParameterComplianceTable"
+import ProjectParameterComplianceTable from "@/components/aec_model_components/ProjectParameterComplianceTable"
 import {
   PARAMETER_CHECKER_DISCIPLINES,
   DEFAULT_DISCIPLINE_ID,
@@ -41,76 +42,34 @@ const getModelUrn = (model) => {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-const toPositiveInt = (value) => {
-  if (typeof value === "number") {
-    if (!Number.isInteger(value) || value <= 0) return null
-    return value
-  }
-
-  const normalized = String(value || "").trim()
-  if (!/^\d+$/.test(normalized)) return null
-
-  const parsed = Number(normalized)
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) return null
-  return parsed
-}
-
-const getRawPropertyValue = (row, names = []) => {
-  const wanted = names.map((name) => String(name || "").trim().toLowerCase())
-  const props = Array.isArray(row?.rawProperties) ? row.rawProperties : []
-  const match = props.find((prop) => wanted.includes(String(prop?.name || "").trim().toLowerCase()))
-  return match?.value
-}
-
-const getRowViewerDbId = (row) => {
-  const candidates = [row?.viewerDbId, getRawPropertyValue(row, ["DbId", "dbId", "Db Id"])]
-
-  for (const candidate of candidates) {
-    const parsed = toPositiveInt(candidate)
-    if (parsed) return parsed
-  }
-
-  return null
-}
-
-const buildPersistenceDraft = ({
-  projectId,
-  modelId,
-  modelName,
-  discipline,
-  categoryResults,
-}) => {
-  const categories = categoryResults.map((result) => ({
-    categoryId: result.categoryId,
-    categoryName: result.categoryName,
-    categoryQuery: result.categoryQuery,
-    status: result.status,
-    totalElements: result.totalElements,
-    fullyCompliant: result.fullyCompliant,
-    compliancePct: result.compliancePct,
-    error: result.error || null,
+const compactRowsForPersistence = (rows = []) =>
+  (Array.isArray(rows) ? rows : []).map((row) => ({
+    viewerDbId: row?.viewerDbId ?? null,
+    dbId: row?.dbId ?? null,
+    elementId: row?.elementId || "",
+    externalElementId: row?.externalElementId || "",
+    revitElementId: row?.revitElementId || "",
+    category: row?.category || "",
+    familyName: row?.familyName || "",
+    elementName: row?.elementName || "",
+    typeMark: row?.typeMark || "",
+    description: row?.description || "",
+    model: row?.model || "",
+    manufacturer: row?.manufacturer || "",
+    assemblyCode: row?.assemblyCode || "",
+    assemblyDescription: row?.assemblyDescription || "",
+    count: row?.count || 1,
+    compliance: row?.compliance || null,
   }))
-
-  return {
-    projectId,
-    modelId,
-    modelName,
-    disciplineId: discipline?.id || "",
-    disciplineName: discipline?.name || "",
-    analyzedAt: new Date().toISOString(),
-    categories,
-  }
-}
 
 export default function AECModelParameterCheckerPage() {
   const { projectId } = useParams()
 
   const bootstrappedProjectRef = useRef("")
   const analysisRunRef = useRef(0)
-  const autoAnalyzePendingRef = useRef(false)
+  const dbLoadRunRef = useRef(0)
 
   const selectionStorageKey = `parameter_checker_selected_model_${projectId || "unknown"}`
-  const draftStorageKey = `parameter_checker_analysis_draft_${projectId || "unknown"}`
 
   const [models, setModels] = useState([])
   const [loadingModels, setLoadingModels] = useState(false)
@@ -123,10 +82,14 @@ export default function AECModelParameterCheckerPage() {
   const [activeCategoryId, setActiveCategoryId] = useState("")
 
   const [analysisByDiscipline, setAnalysisByDiscipline] = useState({})
-  const [analysisDraft, setAnalysisDraft] = useState(null)
   const [isAnalyzingDiscipline, setIsAnalyzingDiscipline] = useState(false)
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [analysisProgress, setAnalysisProgress] = useState({ completed: 0, total: 0 })
   const [isResolvingIsolation, setIsResolvingIsolation] = useState(false)
+  const [isResolvingLastDiscipline, setIsResolvingLastDiscipline] = useState(false)
+  const [viewMode, setViewMode] = useState("checker")
+  const [projectComplianceSummary, setProjectComplianceSummary] = useState({ rows: [], grandTotal: null })
+  const [loadingProjectCompliance, setLoadingProjectCompliance] = useState(false)
 
   const [loadingViewer, setLoadingViewer] = useState(false)
 
@@ -147,10 +110,29 @@ export default function AECModelParameterCheckerPage() {
     [models, selectedModelId]
   )
 
+  const modelNameById = useMemo(
+    () =>
+      models.reduce((acc, model) => {
+        acc[String(model.id)] = String(model.name || "").trim()
+        return acc
+      }, {}),
+    [models]
+  )
+
   const selectedDiscipline = useMemo(() => {
     const fromId = getDisciplineById(selectedDisciplineId)
     return fromId || PARAMETER_CHECKER_DISCIPLINES[0] || null
   }, [selectedDisciplineId])
+
+  const resolveDisciplineName = useCallback((disciplineId) => {
+    const discipline = getDisciplineById(String(disciplineId || ""))
+    return discipline?.name || String(disciplineId || "")
+  }, [])
+
+  const resolveModelName = useCallback(
+    (modelId) => modelNameById[String(modelId || "")] || String(modelId || ""),
+    [modelNameById]
+  )
 
   const effectiveActiveCategoryId = useMemo(() => {
     const categories = Array.isArray(selectedDiscipline?.categories) ? selectedDiscipline.categories : []
@@ -167,14 +149,6 @@ export default function AECModelParameterCheckerPage() {
     const rows = disciplineResults?.[effectiveActiveCategoryId]?.rows
     return Array.isArray(rows) ? rows : []
   }, [disciplineResults, effectiveActiveCategoryId])
-
-  const rowsWithoutDirectDbId = useMemo(() => {
-    let count = 0
-    activeCategoryRows.forEach((row) => {
-      if (!getRowViewerDbId(row)) count += 1
-    })
-    return count
-  }, [activeCategoryRows])
 
   const globalKpis = useMemo(() => {
     const disciplineEntries = Object.values(analysisByDiscipline || {})
@@ -239,9 +213,7 @@ export default function AECModelParameterCheckerPage() {
         `&category=${encodeURIComponent(categoryQuery)}`
 
       const res = await fetch(endpoint, { credentials: "include" })
-     
       const json = await safeJson(res)
-      console.log("Response", json)
       if (!res.ok || !json.success) {
         throw new Error(json?.message || json?.error || "Failed to fetch parameter compliance")
       }
@@ -257,6 +229,245 @@ export default function AECModelParameterCheckerPage() {
       return { rows, summary }
     },
     [apiBase, pId]
+  )
+
+  const fetchLastCategoryCheck = useCallback(
+    async ({ modelId, disciplineId, categoryId }) => {
+      const endpoint =
+        `${apiBase}/aec/${pId}/parameters/last-check` +
+        `?modelId=${encodeURIComponent(modelId)}` +
+        `&disciplineId=${encodeURIComponent(disciplineId)}` +
+        `&categoryId=${encodeURIComponent(categoryId)}`
+
+      const res = await fetch(endpoint, { credentials: "include" })
+      const json = await safeJson(res)
+
+      if (!res.ok || !json.success) {
+        throw new Error(json?.message || json?.error || "Failed to fetch latest saved check")
+      }
+
+      if (!json.found) return null
+
+      const rows = Array.isArray(json?.data?.rows) ? json.data.rows : []
+      const summaryFromApi = json?.data?.summary || null
+
+      return {
+        rows,
+        summary: {
+          totalElements: Number(summaryFromApi?.totalElements) || rows.length,
+          averageCompliancePct: Number(summaryFromApi?.averageCompliancePct) || 0,
+          fullyCompliant: Number(summaryFromApi?.fullyCompliant) || 0,
+        },
+        checkData: json?.checkData || null,
+      }
+    },
+    [apiBase, pId]
+  )
+
+  const fetchLatestDisciplineForModel = useCallback(
+    async (modelId) => {
+      const endpoint =
+        `${apiBase}/aec/${pId}/parameters/last-discipline` +
+        `?modelId=${encodeURIComponent(modelId)}`
+
+      const res = await fetch(endpoint, { credentials: "include" })
+      const json = await safeJson(res)
+
+      if (!res.ok || !json.success) {
+        throw new Error(json?.message || json?.error || "Failed to fetch latest checked discipline")
+      }
+
+      return json
+    },
+    [apiBase, pId]
+  )
+
+  const fetchProjectComplianceSummary = useCallback(async () => {
+    if (!projectId) return
+
+    setLoadingProjectCompliance(true)
+    try {
+      const endpoint = `${apiBase}/aec/${pId}/parameters/project-compliance`
+      const res = await fetch(endpoint, { credentials: "include" })
+      const json = await safeJson(res)
+
+      if (!res.ok || !json.success) {
+        throw new Error(json?.message || json?.error || "Failed to fetch project parameter compliance")
+      }
+
+      setProjectComplianceSummary({
+        rows: Array.isArray(json?.data?.rows) ? json.data.rows : [],
+        grandTotal: json?.data?.grandTotal || null,
+      })
+    } finally {
+      setLoadingProjectCompliance(false)
+    }
+  }, [apiBase, pId, projectId])
+
+  const saveCategoryCheck = useCallback(
+    async ({ modelId, disciplineId, categoryId, rows }) => {
+      const endpoint = `${apiBase}/aec/${pId}/parameters/save-check`
+      const payload = {
+        modelId,
+        disciplineId,
+        categoryId,
+        status: "completed",
+        elements: compactRowsForPersistence(rows),
+      }
+
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(payload),
+      })
+
+      const json = await safeJson(res)
+      if (!res.ok || !json.success) {
+        throw new Error(json?.message || json?.error || "Failed to save parameter check")
+      }
+
+      return json?.data || null
+    },
+    [apiBase, pId]
+  )
+
+  const hydrateDisciplineFromDb = useCallback(
+    async ({ modelId, discipline }) => {
+      if (!modelId || !discipline) return
+
+      const categories = Array.isArray(discipline.categories) ? discipline.categories : []
+      if (!categories.length) return
+
+      const runId = Date.now()
+      dbLoadRunRef.current = runId
+      setIsLoadingHistory(true)
+
+      setAnalysisByDiscipline((prev) => {
+        const previousDiscipline = prev[discipline.id] || {}
+        const previousCategories = previousDiscipline.categories || {}
+        const nextCategories = { ...previousCategories }
+
+        categories.forEach((category) => {
+          nextCategories[category.id] = {
+            ...(nextCategories[category.id] || {}),
+            status: "loading",
+            error: "",
+            rows: [],
+            summary: null,
+            categoryId: category.id,
+            categoryName: category.name,
+            categoryQuery: category.query,
+            modelId,
+          }
+        })
+
+        return {
+          ...prev,
+          [discipline.id]: {
+            ...previousDiscipline,
+            disciplineId: discipline.id,
+            disciplineName: discipline.name,
+            modelId,
+            lastRunAt: new Date().toISOString(),
+            categories: nextCategories,
+          },
+        }
+      })
+
+      try {
+        const categoryResults = await Promise.all(
+          categories.map(async (category) => {
+            try {
+              const persisted = await fetchLastCategoryCheck({
+                modelId,
+                disciplineId: discipline.id,
+                categoryId: category.id,
+              })
+
+              if (!persisted) {
+                return {
+                  categoryId: category.id,
+                  categoryName: category.name,
+                  categoryQuery: category.query,
+                  status: "idle",
+                  error: "",
+                  rows: [],
+                  summary: {
+                    totalElements: 0,
+                    averageCompliancePct: 0,
+                    fullyCompliant: 0,
+                  },
+                }
+              }
+
+              return {
+                categoryId: category.id,
+                categoryName: category.name,
+                categoryQuery: category.query,
+                status: "success",
+                error: "",
+                rows: persisted.rows,
+                summary: persisted.summary,
+              }
+            } catch (err) {
+              return {
+                categoryId: category.id,
+                categoryName: category.name,
+                categoryQuery: category.query,
+                status: "error",
+                error: err?.message || "Error cargando historial desde DB.",
+                rows: [],
+                summary: {
+                  totalElements: 0,
+                  averageCompliancePct: 0,
+                  fullyCompliant: 0,
+                },
+              }
+            }
+          })
+        )
+
+        if (dbLoadRunRef.current !== runId) return
+
+        setAnalysisByDiscipline((prev) => {
+          const previousDiscipline = prev[discipline.id] || {}
+          const previousCategories = previousDiscipline.categories || {}
+          const mergedCategories = { ...previousCategories }
+
+          categoryResults.forEach((entry) => {
+            mergedCategories[entry.categoryId] = {
+              status: entry.status,
+              error: entry.error,
+              rows: entry.rows,
+              summary: entry.summary,
+              categoryId: entry.categoryId,
+              categoryName: entry.categoryName,
+              categoryQuery: entry.categoryQuery,
+              modelId,
+            }
+          })
+
+          return {
+            ...prev,
+            [discipline.id]: {
+              ...previousDiscipline,
+              disciplineId: discipline.id,
+              disciplineName: discipline.name,
+              modelId,
+              lastRunAt: new Date().toISOString(),
+              categories: mergedCategories,
+            },
+          }
+        })
+
+      } finally {
+        if (dbLoadRunRef.current === runId) {
+          setIsLoadingHistory(false)
+        }
+      }
+    },
+    [fetchLastCategoryCheck]
   )
 
   const runDisciplineAnalysis = useCallback(async () => {
@@ -279,10 +490,10 @@ export default function AECModelParameterCheckerPage() {
 
     const runId = Date.now()
     analysisRunRef.current = runId
+    dbLoadRunRef.current += 1
 
     setIsAnalyzingDiscipline(true)
     setAnalysisProgress({ completed: 0, total: categories.length })
-
     setActiveCategoryId(categories[0].id)
 
     setAnalysisByDiscipline((prev) => {
@@ -318,6 +529,7 @@ export default function AECModelParameterCheckerPage() {
     })
 
     const categoryDraft = []
+    const persistenceErrors = []
 
     try {
       for (let index = 0; index < categories.length; index += 1) {
@@ -360,6 +572,20 @@ export default function AECModelParameterCheckerPage() {
               },
             }
           })
+
+          try {
+            await saveCategoryCheck({
+              modelId: selectedModelId,
+              disciplineId: discipline.id,
+              categoryId: category.id,
+              rows: data.rows,
+            })
+          } catch (saveErr) {
+            persistenceErrors.push({
+              categoryName: category.name,
+              message: saveErr?.message || "No se pudo guardar en DB.",
+            })
+          }
 
           categoryDraft.push({
             categoryId: category.id,
@@ -428,40 +654,26 @@ export default function AECModelParameterCheckerPage() {
 
       if (analysisRunRef.current !== runId) return
 
-      const draft = buildPersistenceDraft({
-        projectId,
-        modelId: selectedModelId,
-        modelName: selectedModel?.name || "",
-        discipline,
-        categoryResults: categoryDraft,
-      })
-
-      setAnalysisDraft(draft)
-
-      if (typeof window !== "undefined") {
-        window.sessionStorage.setItem(draftStorageKey, JSON.stringify(draft))
-      }
-
       const okCategories = categoryDraft.filter((entry) => entry.status === "success").length
-      if (okCategories === categories.length) {
+      if (okCategories === categories.length && persistenceErrors.length === 0) {
         toast.success(`Analisis completado para ${discipline.name} (${okCategories}/${categories.length}).`)
       } else {
-        toast.warning(
-          `Analisis completado con incidencias para ${discipline.name} (${okCategories}/${categories.length}).`
-        )
+        const persistInfo =
+          persistenceErrors.length > 0 ? ` Guardado DB con errores en ${persistenceErrors.length} categorias.` : ""
+        toast.warning(`Analisis completado con incidencias para ${discipline.name} (${okCategories}/${categories.length}).${persistInfo}`)
       }
     } finally {
       if (analysisRunRef.current === runId) {
         setIsAnalyzingDiscipline(false)
+        fetchProjectComplianceSummary().catch(() => {})
       }
     }
   }, [
     selectedModelId,
-    selectedModel,
     selectedDiscipline,
     fetchCategoryParameters,
-    projectId,
-    draftStorageKey,
+    saveCategoryCheck,
+    fetchProjectComplianceSummary,
   ])
 
   const openModelDialog = async () => {
@@ -522,24 +734,52 @@ export default function AECModelParameterCheckerPage() {
 
         const persistedModelId =
           typeof window !== "undefined" ? window.sessionStorage.getItem(selectionStorageKey) : null
-        const persistedDraft =
-          typeof window !== "undefined" ? window.sessionStorage.getItem(draftStorageKey) : null
 
         if (persistedModelId) setSelectedModelId(persistedModelId)
-        if (persistedDraft) {
-          try {
-            setAnalysisDraft(JSON.parse(persistedDraft))
-          } catch {
-            setAnalysisDraft(null)
-          }
-        }
       } catch (err) {
         toast.error(err?.message || "No se pudo cargar la lista de modelos.")
       }
     }
 
     bootstrap()
-  }, [projectId, ensureModelsLoaded, selectionStorageKey, draftStorageKey])
+  }, [projectId, ensureModelsLoaded, selectionStorageKey])
+
+  useEffect(() => {
+    fetchProjectComplianceSummary().catch((err) => {
+      toast.error(err?.message || "No se pudo cargar el resumen de compliance del proyecto.")
+    })
+  }, [fetchProjectComplianceSummary])
+
+  useEffect(() => {
+    if (!selectedModelId) {
+      setSelectedDisciplineId(DEFAULT_DISCIPLINE_ID)
+      setIsResolvingLastDiscipline(false)
+      return
+    }
+
+    let cancelled = false
+    setIsResolvingLastDiscipline(true)
+
+    fetchLatestDisciplineForModel(selectedModelId)
+      .then((json) => {
+        if (cancelled) return
+        const lastDisciplineId = String(json?.data?.disciplineId || "")
+        const nextDisciplineId = getDisciplineById(lastDisciplineId)
+          ? lastDisciplineId
+          : DEFAULT_DISCIPLINE_ID
+        setSelectedDisciplineId(nextDisciplineId)
+      })
+      .catch(() => {
+        if (!cancelled) setSelectedDisciplineId(DEFAULT_DISCIPLINE_ID)
+      })
+      .finally(() => {
+        if (!cancelled) setIsResolvingLastDiscipline(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedModelId, fetchLatestDisciplineForModel])
 
   useEffect(() => {
     const firstCategoryId = selectedDiscipline?.categories?.[0]?.id || ""
@@ -592,173 +832,202 @@ export default function AECModelParameterCheckerPage() {
   useEffect(() => {
     return () => {
       analysisRunRef.current += 1
+      dbLoadRunRef.current += 1
       teardownSimpleViewer()
     }
   }, [])
 
   useEffect(() => {
     analysisRunRef.current += 1
+    dbLoadRunRef.current += 1
     setAnalysisByDiscipline({})
-    setAnalysisDraft(null)
     setAnalysisProgress({ completed: 0, total: 0 })
     setIsAnalyzingDiscipline(false)
+    setIsLoadingHistory(false)
   }, [selectedModelId])
 
   useEffect(() => {
     if (!selectedModelId) return
-    if (!autoAnalyzePendingRef.current) return
-
-    autoAnalyzePendingRef.current = false
-    runDisciplineAnalysis()
-  }, [selectedModelId, runDisciplineAnalysis])
+    if (!selectedDiscipline) return
+    if (isResolvingLastDiscipline) return
+    hydrateDisciplineFromDb({ modelId: selectedModelId, discipline: selectedDiscipline })
+  }, [selectedModelId, selectedDiscipline, hydrateDisciplineFromDb, isResolvingLastDiscipline])
 
   return (
     <AppLayout>
       <div className="mx-auto w-full max-w-[1800px] space-y-6 p-6">
-        <div className="flex flex-col justify-between gap-4 border-b border-border pb-6 lg:flex-row lg:items-center">
+        <div className="border-b border-border pb-6">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold tracking-tight text-foreground">AEC Model Parameter Checker</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">Model Parameter Checker</h1>
               <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary">
-                Aislado
+                V.01
               </Badge>
             </div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Analisis por disciplina y categoria, listo para persistir modelId, disciplina, categorias y resultados.
-            </p>
-            {analysisDraft ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Draft listo para DB: {analysisDraft.modelName || analysisDraft.modelId} | {analysisDraft.disciplineName} |
-                categorias {analysisDraft.categories?.length || 0}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" className="gap-2" onClick={openModelDialog}>
-              <Boxes className="h-4 w-4" />
-              Seleccionar Modelo
-            </Button>
-
-            <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
-              <span className="font-medium text-muted-foreground">Disciplina</span>
-              <select
-                className="min-w-[220px] bg-transparent text-sm outline-none"
-                value={selectedDiscipline?.id || ""}
-                onChange={(event) => setSelectedDisciplineId(event.target.value)}
-                disabled={isAnalyzingDiscipline}
-              >
-                {PARAMETER_CHECKER_DISCIPLINES.map((discipline) => (
-                  <option key={discipline.id} value={discipline.id}>
-                    {discipline.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <Button
-              className="gap-2 bg-[rgb(170,32,47)] text-white hover:bg-[rgb(150,28,42)]"
-              onClick={runDisciplineAnalysis}
-              disabled={!selectedModelId || isAnalyzingDiscipline}
-            >
-              <Play className="h-4 w-4" />
-              {isAnalyzingDiscipline ? "Analizando" : "Analizar disciplina"}
-            </Button>
-
-            <Button
-              variant="secondary"
-              className="gap-2"
-              onClick={handleIsolateTableDbIds}
-              disabled={!selectedUrn || loadingViewer || isResolvingIsolation || !activeCategoryRows.length}
-            >
-              <Target className="h-4 w-4" />
-              {isResolvingIsolation ? "Resolviendo dbIds..." : "Aislar dbIds"}
-            </Button>
-
-            <Button
-              variant="ghost"
-              className="gap-2"
-              onClick={handleClearIsolation}
-              disabled={!selectedUrn || loadingViewer || isResolvingIsolation}
-            >
-              <Eraser className="h-4 w-4" />
-              Limpiar aislamiento
-            </Button>
           </div>
         </div>
 
         <div className="space-y-6">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <div className="rounded-lg border border-border bg-card px-4 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Global Analizado</p>
-              <p className="text-2xl font-bold text-foreground">{globalKpis.totalElements}</p>
-            </div>
-            <div className="rounded-lg border border-border bg-card px-4 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Compliance Global Ponderado</p>
-              <p className="text-2xl font-bold text-foreground">{globalKpis.avgCompliance}%</p>
-            </div>
-            <div className="rounded-lg border border-border bg-card px-4 py-3">
-              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Elementos Completos Globales</p>
-              <p className="text-2xl font-bold text-foreground">{globalKpis.fullyCompliant}</p>
-            </div>
-          </div>
-
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="text-xs">
-              Disciplinas analizadas: {globalKpis.analyzedDisciplines}/{PARAMETER_CHECKER_DISCIPLINES.length}
-            </Badge>
-            {isAnalyzingDiscipline ? (
-              <Badge variant="secondary" className="text-xs">
-                Progreso: {analysisProgress.completed}/{analysisProgress.total}
-              </Badge>
-            ) : null}
-            {rowsWithoutDirectDbId > 0 ? (
-              <Badge variant="secondary" className="text-xs">
-                Sin dbId directo (match por Element ID): {rowsWithoutDirectDbId}
-              </Badge>
-            ) : null}
+            <Button
+              size="sm"
+              variant={viewMode === "checker" ? "default" : "outline"}
+              onClick={() => setViewMode("checker")}
+            >
+              Checker
+            </Button>
+            <Button
+              size="sm"
+              variant={viewMode === "project-compliance" ? "default" : "outline"}
+              onClick={() => setViewMode("project-compliance")}
+            >
+              Project Parameter Compliance
+            </Button>
           </div>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-[1fr_2fr]">
-            <div className="min-w-0 rounded-xl border border-border bg-card shadow-sm">
-              <div className="flex items-center justify-between border-b border-border px-4 py-3">
-                <div>
-                  <h2 className="text-sm font-semibold text-foreground">Viewer</h2>
-                  <p className="text-xs text-muted-foreground">
-                    {selectedModel?.name || "Selecciona un modelo para visualizar"}
-                  </p>
+          {viewMode === "checker" ? (
+            <>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-lg border border-border bg-card px-4 py-3">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Total Global Analizado</p>
+                  <p className="text-2xl font-bold text-foreground">{globalKpis.totalElements}</p>
                 </div>
-                {selectedUrn ? (
-                  <Badge variant="secondary" className="max-w-[320px] truncate">
-                    URN lista
-                  </Badge>
-                ) : null}
+                <div className="rounded-lg border border-border bg-card px-4 py-3">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Compliance Global Ponderado</p>
+                  <p className="text-2xl font-bold text-foreground">{globalKpis.avgCompliance}%</p>
+                </div>
+                <div className="rounded-lg border border-border bg-card px-4 py-3">
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Elementos Completos Globales</p>
+                  <p className="text-2xl font-bold text-foreground">{globalKpis.fullyCompliant}</p>
+                </div>
               </div>
 
-              <div className="relative h-[620px] bg-slate-100">
-                {loadingViewer ? (
-                  <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
-                    <AbitatLogoLoader className="scale-75" />
-                  </div>
-                ) : null}
-                {!selectedUrn ? (
-                  <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
-                    Selecciona un modelo para inicializar el Autodesk Viewer.
-                  </div>
-                ) : null}
-                <div id={VIEWER_CONTAINER_ID} className="h-full w-full" />
-              </div>
-            </div>
+              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  {isAnalyzingDiscipline ? (
+                    <Badge variant="secondary" className="text-xs">
+                      Progreso: {analysisProgress.completed}/{analysisProgress.total}
+                    </Badge>
+                  ) : null}
+                  {isLoadingHistory ? (
+                    <Badge variant="secondary" className="text-xs">
+                      Cargando historial desde DB...
+                    </Badge>
+                  ) : null}
+                  {isResolvingLastDiscipline ? (
+                    <Badge variant="secondary" className="text-xs">
+                      Resolviendo ultima disciplina analizada...
+                    </Badge>
+                  ) : null}
+                </div>
 
-            <div className="min-w-0">
-              <ParameterComplianceTable
-                discipline={selectedDiscipline}
-                categoryResults={disciplineResults}
-                activeCategoryId={effectiveActiveCategoryId}
-                onActiveCategoryChange={setActiveCategoryId}
-              />
-            </div>
-          </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" className="gap-2" onClick={openModelDialog}>
+                    <Boxes className="h-4 w-4" />
+                    Seleccionar Modelo
+                  </Button>
+
+                  <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                    <span className="font-medium text-muted-foreground">Disciplina</span>
+                    <select
+                      className="min-w-[220px] bg-transparent text-sm outline-none"
+                      value={selectedDiscipline?.id || ""}
+                      onChange={(event) => setSelectedDisciplineId(event.target.value)}
+                      disabled={isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
+                    >
+                      {PARAMETER_CHECKER_DISCIPLINES.map((discipline) => (
+                        <option key={discipline.id} value={discipline.id}>
+                          {discipline.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <Button
+                    className="gap-2 bg-[rgb(170,32,47)] text-white hover:bg-[rgb(150,28,42)]"
+                    onClick={runDisciplineAnalysis}
+                    disabled={!selectedModelId || isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
+                  >
+                    <Play className="h-4 w-4" />
+                    {isAnalyzingDiscipline
+                      ? "Analizando"
+                      : isLoadingHistory || isResolvingLastDiscipline
+                        ? "Cargando"
+                        : "Analizar disciplina"}
+                  </Button>
+
+                  <Button
+                    variant="secondary"
+                    className="gap-2"
+                    onClick={handleIsolateTableDbIds}
+                    disabled={!selectedUrn || loadingViewer || isResolvingIsolation || !activeCategoryRows.length}
+                  >
+                    <Target className="h-4 w-4" />
+                    {isResolvingIsolation ? "Resolviendo dbIds..." : "Aislar dbIds"}
+                  </Button>
+
+                  <Button
+                    variant="ghost"
+                    className="gap-2"
+                    onClick={handleClearIsolation}
+                    disabled={!selectedUrn || loadingViewer || isResolvingIsolation}
+                  >
+                    <Eraser className="h-4 w-4" />
+                    Limpiar aislamiento
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[1fr_2fr]">
+                <div className="min-w-0 self-start flex h-[600px] max-h-[600px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
+                  <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                    <div>
+                      <h2 className="text-sm font-semibold text-foreground">Viewer</h2>
+                      <p className="text-xs text-muted-foreground">
+                        {selectedModel?.name || "Selecciona un modelo para visualizar"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="relative min-h-0 flex-1 overflow-hidden bg-slate-100">
+                    {loadingViewer ? (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80">
+                        <AbitatLogoLoader className="scale-75" />
+                      </div>
+                    ) : null}
+                    {!selectedUrn ? (
+                      <div className="absolute inset-0 z-10 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">
+                        Selecciona un modelo para inicializar el Autodesk Viewer.
+                      </div>
+                    ) : null}
+                    <div id={VIEWER_CONTAINER_ID} className="absolute inset-0 h-full w-full min-h-full" />
+                  </div>
+                </div>
+
+                <div className="min-w-0">
+                  <ParameterComplianceTable
+                    discipline={selectedDiscipline}
+                    categoryResults={disciplineResults}
+                    activeCategoryId={effectiveActiveCategoryId}
+                    onActiveCategoryChange={setActiveCategoryId}
+                  />
+                </div>
+              </div>
+            </>
+          ) : (
+            <ProjectParameterComplianceTable
+              rows={projectComplianceSummary.rows}
+              grandTotal={projectComplianceSummary.grandTotal}
+              loading={loadingProjectCompliance}
+              resolveModelName={resolveModelName}
+              resolveDisciplineName={resolveDisciplineName}
+              onRefresh={() => {
+                fetchProjectComplianceSummary().catch((err) => {
+                  toast.error(err?.message || "No se pudo actualizar el resumen de compliance.")
+                })
+              }}
+            />
+          )}
         </div>
       </div>
 
@@ -777,7 +1046,6 @@ export default function AECModelParameterCheckerPage() {
               toast.warning("Solo se usara el primer modelo seleccionado para el checker.")
             }
 
-            autoAnalyzePendingRef.current = true
             setSelectedModelId(nextSelected)
             setIsModelDialogOpen(false)
           } catch (err) {

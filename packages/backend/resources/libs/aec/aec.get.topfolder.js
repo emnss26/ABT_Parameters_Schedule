@@ -1,4 +1,5 @@
 const axios = require("axios")
+const { logGraphQlResponseSize } = require("../../../utils/monitoring/graphql.response.size.logger")
 
 const AEC_GRAPHQL_URL = "https://developer.api.autodesk.com/aec/graphql"
 
@@ -32,6 +33,12 @@ async function fetchTopFoldersGraphql(token, projectId) {
         },
       }
     )
+
+    logGraphQlResponseSize({
+      provider: "AEC",
+      query,
+      payload: data,
+    })
 
     const gqlErrors = data?.errors
     if (Array.isArray(gqlErrors) && gqlErrors.length) {

@@ -57,5 +57,5 @@ function onError(err) {
 function onListening() {
   const addr = server.address();
   const bind = typeof addr === "string" ? `pipe ${addr}` : `port ${addr.port}`;
-  console.log(`🚀 Server running on ${bind} [${config.env || 'development'}]`);
+  // console.log(`🚀 Server running on ${bind} [${config.env || 'development'}]`);
 }

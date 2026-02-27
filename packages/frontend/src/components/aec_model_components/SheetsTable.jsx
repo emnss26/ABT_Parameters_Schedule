@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-/* --- CONFIGURACIÓN DE COLUMNAS --- */
+/* --- COLUMN CONFIGURATION --- */
 const COLUMN_DEFINITIONS = [
   { id: "index", label: "#", group: "basic", width: "w-12" },
   { id: "number", label: "N° Plano", group: "basic", sortable: true, width: "min-w-[100px]" },
@@ -66,7 +66,7 @@ const isoToDMY = (iso) => {
 
 const dmyToISO = (dmy) => {
   if (!dmy) return "";
-  const m = String(dmy).trim().match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})$/);
+  const m = String(dmy).trim().match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
   if (!m) return "";
   let [, dd, mm, yy] = m;
   const d = parseInt(dd, 10);
@@ -86,7 +86,7 @@ const toInputDateValue = (dmy) => {
 
 const toBool = (v) => v === true || v === 1 || v === "1" || String(v).toLowerCase() === "true";
 
-/* --- SUB-COMPONENTES --- */
+/* --- SUB-COMPONENTS --- */
 
 const ProgressBar = ({ pct }) => {
   let info = { color: "bg-gray-300", label: "Pendiente", textColor: "text-gray-500" };
@@ -295,6 +295,8 @@ export default function SheetsTable({
   });
 
   useEffect(() => {
+    // Sync local editable snapshot whenever parent data changes.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setRows(Array.isArray(data) ? data.map(normalizeRow) : []);
   }, [data]);
 
@@ -395,12 +397,12 @@ export default function SheetsTable({
 
   const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 
-  const getDefaultWidths = () => {
+  const getDefaultWidths = useCallback(() => {
     const obj = {};
     for (const c of COLUMN_DEFINITIONS) obj[c.id] = parseWidthPx(c.width);
     obj.name = Math.max(obj.name || 180, 260);
     return obj;
-  };
+  }, []);
 
   const getMinWidth = (colId) => {
     if (colId === "index") return 48;
@@ -427,7 +429,11 @@ export default function SheetsTable({
   });
 
   const persistWidths = useCallback((next) => {
-    try { localStorage.setItem(RESIZE_STORAGE_KEY, JSON.stringify(next)); } catch { }
+    try {
+      localStorage.setItem(RESIZE_STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      return;
+    }
   }, []);
 
   const resizeRef = useRef(null);
@@ -451,7 +457,6 @@ export default function SheetsTable({
 
     resizeRef.current = null;
     window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", endResize);
 
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
@@ -475,7 +480,7 @@ export default function SheetsTable({
     document.body.style.userSelect = "none";
 
     window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", endResize);
+    window.addEventListener("pointerup", endResize, { once: true });
   }, [colWidths, onPointerMove, endResize]);
 
   const resetWidth = useCallback((e, colId) => {
@@ -487,10 +492,10 @@ export default function SheetsTable({
       persistWidths(next);
       return next;
     });
-  }, [persistWidths]);
+  }, [getDefaultWidths, persistWidths]);
   // ====== /COLUMN RESIZE ======
 
-  // ✅ MOVIDO: visibleCols y runs fuera del thead, para reusar también en <colgroup>
+  // Keep these memoized outside <thead> to reuse in <colgroup>.
   const visibleCols = useMemo(
     () => COLUMN_DEFINITIONS.filter((c) => visibleColumns.has(c.id)),
     [visibleColumns]
@@ -514,7 +519,7 @@ export default function SheetsTable({
 
   return (
     <div className="space-y-4">
-      {/* TOOLBAR */}
+      {/* Toolbar */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between bg-card p-2 rounded-lg border">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -549,11 +554,11 @@ export default function SheetsTable({
         </div>
       </div>
 
-      {/* TABLA */}
+      {/* Table */}
       <div className="rounded-md border bg-card overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <Table className="w-full text-xs table-fixed">
-            {/* ✅ FIX: colgroup debe ser hijo directo de table (antes del thead/tbody) */}
+            {/* colgroup must be a direct child of <table> before <thead>/<tbody>. */}
             <colgroup>
               {visibleCols.map((col) => (
                 <col
@@ -564,7 +569,7 @@ export default function SheetsTable({
             </colgroup>
 
             <TableHeader>
-              {/* ROW 1: Grupos */}
+              {/* Row 1: Groups */}
               <TableRow className="bg-muted/50 border-b border-border hover:bg-muted/50">
                 {runs.map((r, idx) => (
                   <TableHead
@@ -581,7 +586,7 @@ export default function SheetsTable({
                 ))}
               </TableRow>
 
-              {/* ROW 2: Columnas */}
+              {/* Row 2: Columns */}
               <TableRow className="bg-background border-b-2 border-border hover:bg-background">
                 {visibleCols.map((col) => {
                   let cellClass = "h-10 px-3 py-2 border-r last:border-r-0 border-border/50 relative";
@@ -609,7 +614,7 @@ export default function SheetsTable({
                         </SortableHeader>
                       </div>
 
-                      {/* Handle resize */}
+                      {/* Resize handle */}
                       <div
                         onPointerDown={(e) => startResize(e, col.id)}
                         onDoubleClick={(e) => resetWidth(e, col.id)}
@@ -644,7 +649,7 @@ export default function SheetsTable({
                   const isComplete = progress === 100;
                   return (
                     <TableRow
-                      key={r.id || `temp-${Math.random()}`}
+                      key={r.id ? `row-${r.id}` : `row-temp-${realIndex}`}
                       className={`group hover:bg-muted/50 transition-colors ${isComplete ? "bg-green-50/40 hover:bg-green-50/60" : ""}`}
                     >
                       {isVisible("index") && (
@@ -784,3 +789,4 @@ export default function SheetsTable({
     </div>
   );
 }
+

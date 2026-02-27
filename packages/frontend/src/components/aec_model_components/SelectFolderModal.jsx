@@ -76,6 +76,8 @@ export default function SelectFolderModal({
   const [selected, setSelected] = useState(selectedFolderId || null);
 
   useEffect(() => {
+    // Keep local draft selection in sync with latest saved folder id.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelected(selectedFolderId || null);
   }, [selectedFolderId]);
 

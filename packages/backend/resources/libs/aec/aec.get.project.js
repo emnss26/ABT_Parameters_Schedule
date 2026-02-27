@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { logGraphQlResponseSize } = require("../../../utils/monitoring/graphql.response.size.logger");
 const AEC_GRAPHQL_URL = "https://developer.api.autodesk.com/aec/graphql";
 
 async function fetchProjects(token, hubId) {
@@ -39,6 +40,12 @@ async function fetchProjects(token, hubId) {
       { query, variables },
       { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
     );
+
+    logGraphQlResponseSize({
+      provider: "AEC",
+      query,
+      payload: data,
+    });
 
     const gqlErrors = data?.errors;
     if (Array.isArray(gqlErrors) && gqlErrors.length) {

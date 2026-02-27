@@ -64,32 +64,70 @@ const ensureViewerAssets = async () => {
   await assetsPromise
 }
 
-const normalizeViewerUrn = (rawUrn) => {
-  const clean = String(rawUrn || "").trim()
-  if (!clean) return ""
-  return clean.startsWith("urn:") ? clean : `urn:${clean}`
-}
+const normalizeBase64Url = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/=/g, "")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
 
-const encodeUrnToBase64 = (rawUrn) => {
-  const normalized = normalizeViewerUrn(rawUrn)
-  if (!normalized) return ""
-  return btoa(normalized)
+const isLikelyBase64 = (value) => /^[A-Za-z0-9_-]+$/.test(String(value || "").trim())
+
+const toBase64Url = (value) => normalizeBase64Url(btoa(String(value || "")))
+
+/**
+ * Accepts:
+ * - raw URN: "urn:adsk.wipprod:fs.file:vf....?version=18"
+ * - base64 URN without prefix: "dXJuOmFkc2s..."
+ * - base64 URN with prefix: "urn:dXJuOmFkc2s..."
+ * Returns always: "urn:<base64UrlSafeWithoutPadding>"
+ */
+const toViewerDocumentId = (inputUrn) => {
+  const value = String(inputUrn || "").trim()
+  if (!value) return ""
+
+  if (value.startsWith("urn:")) {
+    const tail = value.slice(4).trim()
+    if (tail && !tail.includes(":") && isLikelyBase64(tail)) {
+      return `urn:${normalizeBase64Url(tail)}`
+    }
+
+    return `urn:${toBase64Url(value)}`
+  }
+
+  if (!value.includes(":") && isLikelyBase64(value)) {
+    return `urn:${normalizeBase64Url(value)}`
+  }
+
+  return `urn:${toBase64Url(`urn:${value}`)}`
 }
 
 const fetchViewerToken = async () => {
-  const response = await fetch(`${backendUrl}/auth/token`, {
-    method: "GET",
-    credentials: "include",
-  })
+  const endpoints = [`${backendUrl}/auth/token`, `${backendUrl}/api/auth/two-legged`]
+  let lastError = null
 
-  if (!response.ok) {
-    throw new Error(`Failed to fetch token (${response.status})`)
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "GET",
+        credentials: "include",
+      })
+      if (!response.ok) {
+        lastError = new Error(`Failed to fetch token from ${endpoint} (${response.status})`)
+        continue
+      }
+
+      const json = await response.json()
+      const token = json?.data?.access_token || json?.access_token || null
+      if (token) return token
+
+      lastError = new Error(`Token response is empty in ${endpoint}`)
+    } catch (error) {
+      lastError = error
+    }
   }
 
-  const json = await response.json()
-  const token = json?.data?.access_token || json?.access_token || null
-  if (!token) throw new Error("Backend did not return a valid viewer token")
-  return token
+  throw lastError || new Error("Backend did not return a valid viewer token")
 }
 
 const resetViewerElementIdIndex = () => {
@@ -274,18 +312,20 @@ export const resolveViewerDbIdsForRows = async (rows = []) => {
   const safeRows = Array.isArray(rows) ? rows : []
   const resolvedDbIds = new Set()
   const unresolvedRows = []
+  const resolvedByRowIndex = new Array(safeRows.length).fill(null)
 
   let matchedDirectRows = 0
 
-  safeRows.forEach((row) => {
+  safeRows.forEach((row, rowIndex) => {
     const directDbId = extractDirectViewerDbIdFromRow(row)
     if (directDbId) {
       resolvedDbIds.add(directDbId)
+      resolvedByRowIndex[rowIndex] = directDbId
       matchedDirectRows += 1
       return
     }
 
-    unresolvedRows.push(row)
+    unresolvedRows.push({ row, rowIndex })
   })
 
   let matchedFromIndexRows = 0
@@ -294,7 +334,7 @@ export const resolveViewerDbIdsForRows = async (rows = []) => {
   if (unresolvedRows.length > 0) {
     const elementIdIndex = await getViewerElementIdIndex()
 
-    unresolvedRows.forEach((row) => {
+    unresolvedRows.forEach(({ row, rowIndex }) => {
       const keys = extractElementIdKeysFromRow(row)
       const matchedDbId = keys
         .map((key) => elementIdIndex.get(key))
@@ -303,6 +343,7 @@ export const resolveViewerDbIdsForRows = async (rows = []) => {
 
       if (matchedDbId) {
         resolvedDbIds.add(matchedDbId)
+        resolvedByRowIndex[rowIndex] = matchedDbId
         matchedFromIndexRows += 1
       } else {
         unmatchedRows += 1
@@ -316,6 +357,7 @@ export const resolveViewerDbIdsForRows = async (rows = []) => {
     matchedDirectRows,
     matchedFromIndexRows,
     unmatchedRows,
+    resolvedByRowIndex,
   }
 }
 
@@ -328,16 +370,20 @@ export const teardownSimpleViewer = () => {
   resetViewerElementIdIndex()
 }
 
-export const isolateViewerDbIds = (dbIds = []) => {
+export const isolateViewerDbIds = (dbIds = [], options = {}) => {
   if (!viewerInstance) throw new Error("Viewer is not initialized")
   if (!viewerInstance.model) throw new Error("Viewer model is still loading")
+
+  const fitToView = options?.fitToView !== false
+  const select = options?.select !== false
 
   const validDbIds = toValidDbIds(dbIds)
   if (!validDbIds.length) throw new Error("No valid dbIds to isolate")
 
   viewerInstance.isolate(validDbIds)
-  viewerInstance.select(validDbIds)
-  viewerInstance.fitToView(validDbIds)
+  if (select) viewerInstance.select(validDbIds)
+  else viewerInstance.clearSelection()
+  if (fitToView) viewerInstance.fitToView(validDbIds)
 
   return validDbIds
 }
@@ -367,11 +413,14 @@ export const simpleViewer = async (urn, containerId = "TADSimpleViewer") => {
 
   teardownSimpleViewer()
   container.innerHTML = ""
+  container.style.width = "100%"
+  container.style.height = "100%"
 
   const options = {
     env: "AutodeskProduction",
     api: "modelDerivativeV2",
     accessToken: token,
+    getAccessToken: (cb) => cb(token, 3599),
   }
 
   await new Promise((resolve, reject) => {
@@ -383,14 +432,11 @@ export const simpleViewer = async (urn, containerId = "TADSimpleViewer") => {
         return
       }
 
-      const normalizedUrn = normalizeViewerUrn(rawUrn)
-      const encodedUrn = encodeUrnToBase64(normalizedUrn)
-      if (!encodedUrn) {
+      const documentId = toViewerDocumentId(rawUrn)
+      if (!documentId) {
         reject(new Error("Invalid URN for viewer"))
         return
       }
-
-      const documentId = `urn:${encodedUrn}`
 
       Autodesk.Viewing.Document.load(
         documentId,
@@ -407,6 +453,24 @@ export const simpleViewer = async (urn, containerId = "TADSimpleViewer") => {
             .then(() => {
               viewerInstance = viewer
               resetViewerElementIdIndex()
+              const rootViewerNode = container.querySelector(".adsk-viewing-viewer")
+              if (rootViewerNode) {
+                rootViewerNode.style.width = "100%"
+                rootViewerNode.style.height = "100%"
+              }
+              // Ensure canvas/layout fully fit after parent container settles.
+              const doResize = () => {
+                try {
+                  viewer.resize()
+                } catch {
+                  return
+                }
+              }
+              doResize()
+              if (typeof window !== "undefined") {
+                window.requestAnimationFrame(doResize)
+                window.setTimeout(doResize, 150)
+              }
               resolve()
             })
             .catch((error) => reject(error))

@@ -1,5 +1,9 @@
 import React, { useMemo } from "react"
+import * as XLSX from "xlsx"
+import jsPDF from "jspdf"
+import autoTable from "jspdf-autotable"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Table,
   TableBody,
@@ -8,6 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { Download, FileText } from "lucide-react"
 
 const REQUIRED_FIELDS = [
   { key: "revitElementId", aliases: ["Revit Element ID", "Element Id", "ElementId", "Id"] },
@@ -24,13 +29,46 @@ const REQUIRED_FIELDS = [
 
 const hasValue = (value) => String(value || "").trim() !== ""
 const normalize = (value) => String(value || "").trim().toLowerCase()
+const normalizeKey = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+
+const compactKey = (value) => normalizeKey(value).replace(/\s+/g, "")
 const safeText = (value) => (hasValue(value) ? String(value) : "-")
 
 const pickRawPropertyValue = (row, aliases = []) => {
-  const wanted = aliases.map(normalize)
+  const wanted = aliases.map(normalizeKey).filter(Boolean)
+  const wantedCompact = wanted.map(compactKey).filter(Boolean)
   const props = Array.isArray(row?.rawProperties) ? row.rawProperties : []
-  const match = props.find((prop) => wanted.includes(normalize(prop?.name)))
-  return match?.value ?? ""
+
+  const exactMatch = props.find((prop) => {
+    const label = normalizeKey(prop?.name)
+    if (!label) return false
+    const compact = compactKey(prop?.name)
+    return wanted.includes(label) || wantedCompact.includes(compact)
+  })
+  if (exactMatch) return exactMatch?.value ?? ""
+
+  const partialMatch = props.find((prop) => {
+    const label = normalizeKey(prop?.name)
+    if (!label) return false
+    const compact = compactKey(prop?.name)
+    return wanted.some((alias, idx) => {
+      const aliasCompact = wantedCompact[idx]
+      return (
+        label.includes(alias) ||
+        alias.includes(label) ||
+        compact.includes(aliasCompact) ||
+        aliasCompact.includes(compact)
+      )
+    })
+  })
+
+  return partialMatch?.value ?? ""
 }
 
 const resolveField = (row, key, aliases = []) => {
@@ -82,6 +120,37 @@ const statusLabel = (status) => {
   return "Pendiente"
 }
 
+const mapRowToExport = (row = {}) => {
+  const dbId = resolveField(row, "dbId", ["DbId", "dbId", "Db Id"])
+  const revitElementId = resolveField(row, "revitElementId", ["Revit Element ID", "Element Id", "ElementId", "Id"])
+  const category = resolveField(row, "category", ["Revit Category Type Id", "Category", "Category Name"])
+  const familyName = resolveField(row, "familyName", ["Family Name", "Family"])
+  const elementName = resolveField(row, "elementName", ["Element Name", "Name"])
+  const typeMark = resolveField(row, "typeMark", ["Type Mark", "Mark"])
+  const description = resolveField(row, "description", ["Description", "Type Description"])
+  const model = resolveField(row, "model", ["Model", "Model Number", "Modelo"])
+  const manufacturer = resolveField(row, "manufacturer", ["Manufacturer", "Fabricante"])
+  const assemblyCode = resolveField(row, "assemblyCode", ["Assembly Code", "OmniClass Number"])
+  const assemblyDescription = resolveField(row, "assemblyDescription", ["Assembly Description", "OmniClass Title"])
+  const compliance = getCompliancePct(row)
+
+  return {
+    "dbId (raw)": safeText(dbId),
+    "Revit Element ID": safeText(revitElementId),
+    Category: safeText(category),
+    "Family Name": safeText(familyName),
+    "Element Name": safeText(elementName),
+    "Type Mark": safeText(typeMark),
+    Description: safeText(description),
+    Model: safeText(model),
+    Manufacturer: safeText(manufacturer),
+    "Assembly Code": safeText(assemblyCode),
+    "Assembly Description": safeText(assemblyDescription),
+    Count: safeText(row.count),
+    "Compliance %": compliance,
+  }
+}
+
 export default function ParameterComplianceTable({
   discipline = null,
   categoryResults = {},
@@ -109,21 +178,47 @@ export default function ParameterComplianceTable({
     [activeRows, activeResult?.summary]
   )
 
+  const exportRows = useMemo(() => activeRows.map((row) => mapRowToExport(row)), [activeRows])
+
+  const handleExportExcel = () => {
+    if (!exportRows.length) return
+    const wb = XLSX.utils.book_new()
+    const sheet = XLSX.utils.json_to_sheet(exportRows)
+    XLSX.utils.book_append_sheet(wb, sheet, "Compliance")
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
+    XLSX.writeFile(wb, `Parameter_Check_${effectiveCategoryId || "Category"}_${stamp}.xlsx`)
+  }
+
+  const handleExportPdf = () => {
+    if (!exportRows.length) return
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
+    doc.setFontSize(12)
+    doc.text(`Parameter Checker - ${activeCategory?.name || "Categoria"}`, 40, 30)
+    autoTable(doc, {
+      startY: 40,
+      styles: { fontSize: 7, cellPadding: 3 },
+      head: [Object.keys(exportRows[0])],
+      body: exportRows.map((row) => Object.values(row)),
+    })
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
+    doc.save(`Parameter_Check_${effectiveCategoryId || "Category"}_${stamp}.pdf`)
+  }
+
   return (
-    <div className="rounded-xl border border-border bg-card shadow-sm">
+    <div className="flex h-[600px] max-h-[600px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <div className="border-b border-border px-4 py-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-foreground">
-              {discipline?.name || "Parameter Compliance"}
-            </h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {discipline?.focus || "Analisis por categorias del modelo seleccionado."}
-            </p>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-foreground">
+            {discipline?.name || "Parameter Compliance"}
+          </h3>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" className="gap-1" onClick={handleExportExcel} disabled={!exportRows.length}>
+              <Download className="h-4 w-4" /> Excel
+            </Button>
+            <Button size="sm" variant="outline" className="gap-1" onClick={handleExportPdf} disabled={!exportRows.length}>
+              <FileText className="h-4 w-4" /> PDF
+            </Button>
           </div>
-          <Badge variant="outline" className="max-w-[400px] truncate text-xs">
-            Parametros clave: {(discipline?.keyParameters || []).join(" | ") || "-"}
-          </Badge>
         </div>
       </div>
 
@@ -173,11 +268,10 @@ export default function ParameterComplianceTable({
         </div>
       </div>
 
-      <div className="h-[620px] overflow-auto pb-2">
+      <div className="min-h-0 flex-1 overflow-auto pb-2">
         <Table className="min-w-[1750px] text-xs">
           <TableHeader>
             <TableRow className="bg-muted/40">
-              <TableHead className="w-[120px]">Viewer dbId</TableHead>
               <TableHead className="w-[120px]">dbId (raw)</TableHead>
               <TableHead className="w-[130px]">Revit Element ID</TableHead>
               <TableHead className="min-w-[120px]">Category</TableHead>
@@ -196,25 +290,24 @@ export default function ParameterComplianceTable({
           <TableBody>
             {activeStatus === "loading" ? (
               <TableRow>
-                <TableCell colSpan={14} className="h-20 text-center text-muted-foreground">
+                <TableCell colSpan={13} className="h-20 text-center text-muted-foreground">
                   Analizando categoria {activeCategory?.name || "..."}...
                 </TableCell>
               </TableRow>
             ) : activeStatus === "error" ? (
               <TableRow>
-                <TableCell colSpan={14} className="h-20 text-center text-red-600">
+                <TableCell colSpan={13} className="h-20 text-center text-red-600">
                   {activeError || "Error analizando la categoria seleccionada."}
                 </TableCell>
               </TableRow>
             ) : activeRows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={14} className="h-20 text-center text-muted-foreground">
+                <TableCell colSpan={13} className="h-20 text-center text-muted-foreground">
                   No hay resultados para la categoria seleccionada.
                 </TableCell>
               </TableRow>
             ) : (
               activeRows.map((row, idx) => {
-                const viewerDbId = resolveField(row, "viewerDbId", ["DbId", "dbId", "Db Id"])
                 const dbId = resolveField(row, "dbId", ["DbId", "dbId", "Db Id"])
                 const revitElementId = resolveField(row, "revitElementId", [
                   "Revit Element ID",
@@ -242,12 +335,9 @@ export default function ParameterComplianceTable({
 
                 return (
                   <TableRow
-                    key={`${viewerDbId || dbId || revitElementId || row.elementId || idx}`}
+                    key={`${dbId || revitElementId || row.elementId || idx}`}
                     className="hover:bg-muted/30"
                   >
-                    <TableCell className={!hasValue(viewerDbId) ? "text-red-500 font-mono" : "font-mono"}>
-                      {safeText(viewerDbId)}
-                    </TableCell>
                     <TableCell className={!hasValue(dbId) ? "text-red-500 font-mono" : "font-mono"}>
                       {safeText(dbId)}
                     </TableCell>

@@ -2,7 +2,7 @@
 const axios = require("axios");
 const https = require("https");
 
-// keepAlive reduce overhead de miles de requests
+// keepAlive reduces overhead when running many folder requests.
 const http = axios.create({
   timeout: 30000,
   httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 50 }),
@@ -31,7 +31,7 @@ async function fetchSubFoldersRest(token, projectId, folderId) {
         }))
       );
 
-      // JSON:API links.next suele venir aquí
+      // JSON:API pagination usually exposes the next link here.
       const next = data.links?.next;
       url =
         typeof next === "string"
@@ -50,3 +50,4 @@ async function fetchSubFoldersRest(token, projectId, folderId) {
 }
 
 module.exports = { fetchSubFoldersRest };
+

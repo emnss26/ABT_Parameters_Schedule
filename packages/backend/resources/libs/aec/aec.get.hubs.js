@@ -1,4 +1,5 @@
 const axios = require("axios")
+const { logGraphQlResponseSize } = require("../../../utils/monitoring/graphql.response.size.logger")
 
 const AEC_GRAPHQL_URL = "https://developer.api.autodesk.com/aec/graphql"
 
@@ -23,7 +24,7 @@ async function fetchHubs(token) {
   const hubs = []
   let cursor = null
 
-  console.log("Hubs", hubs)
+  // console.log("Hubs", hubs)
 
   try {
     while (true) {
@@ -37,6 +38,12 @@ async function fetchHubs(token) {
           },
         }
       )
+
+      logGraphQlResponseSize({
+        provider: "AEC",
+        query,
+        payload: data,
+      })
 
       const gqlErrors = data?.errors
       if (Array.isArray(gqlErrors) && gqlErrors.length) {
@@ -58,3 +65,4 @@ async function fetchHubs(token) {
 }
 
 module.exports = { fetchHubs }
+

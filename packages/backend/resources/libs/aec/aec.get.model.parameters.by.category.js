@@ -1,4 +1,5 @@
 const axios = require("axios")
+const { logGraphQlResponseSize } = require("../../../utils/monitoring/graphql.response.size.logger")
 
 const AEC_GRAPHQL_URL = "https://developer.api.autodesk.com/aec/graphql"
 const ELEMENT_PAGE_LIMIT = 500
@@ -36,6 +37,15 @@ const toText = (value) => {
 }
 
 const normalize = (value) => String(value || "").trim().toLowerCase()
+const normalizeKey = (value) =>
+  toText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+
+const compactKey = (value) => normalizeKey(value).replace(/\s+/g, "")
 
 const toPositiveInt = (value) => {
   if (typeof value === "number") {
@@ -51,10 +61,55 @@ const toPositiveInt = (value) => {
   return parsed
 }
 
-const pickProperty = (properties, names) => {
-  const wanted = (Array.isArray(names) ? names : [names]).map(normalize)
-  const hit = (properties || []).find((property) => wanted.includes(normalize(property?.name)))
-  return toText(hit?.value)
+const toPropertyLabel = (property = {}) =>
+  toText(property?.name) || toText(property?.definition?.name) || toText(property?.definition?.description)
+
+const pickProperty = (properties, names, tokenGroups = []) => {
+  const wanted = (Array.isArray(names) ? names : [names]).map(normalizeKey).filter(Boolean)
+  const wantedCompact = wanted.map(compactKey).filter(Boolean)
+  const source = Array.isArray(properties) ? properties : []
+
+  const exact = source.find((property) => {
+    const label = toPropertyLabel(property)
+    if (!label) return false
+    const key = normalizeKey(label)
+    const compact = compactKey(label)
+    return wanted.includes(key) || wantedCompact.includes(compact)
+  })
+  if (exact) return toText(exact?.value)
+
+  const partial = source.find((property) => {
+    const label = toPropertyLabel(property)
+    if (!label) return false
+    const key = normalizeKey(label)
+    const compact = compactKey(label)
+    return wanted.some((alias, idx) => {
+      const aliasCompact = wantedCompact[idx]
+      return (
+        key.includes(alias) ||
+        alias.includes(key) ||
+        compact.includes(aliasCompact) ||
+        aliasCompact.includes(compact)
+      )
+    })
+  })
+  if (partial) return toText(partial?.value)
+
+  if (Array.isArray(tokenGroups) && tokenGroups.length > 0) {
+    const byTokens = source.find((property) => {
+      const key = normalizeKey(toPropertyLabel(property))
+      if (!key) return false
+      return tokenGroups.some((group) =>
+        group
+          .map((token) => normalizeKey(token))
+          .filter(Boolean)
+          .every((token) => key.includes(token))
+      )
+    })
+    if (byTokens) return toText(byTokens?.value)
+  }
+
+  return ""
 }
 
 const graphQlPost = async (token, query, variables) => {
@@ -68,6 +123,12 @@ const graphQlPost = async (token, query, variables) => {
       },
     }
   )
+
+  logGraphQlResponseSize({
+    provider: "AEC",
+    query,
+    payload: data,
+  })
 
   const gqlErrors = data?.errors
   if (Array.isArray(gqlErrors) && gqlErrors.length) {
@@ -92,16 +153,33 @@ const mapElementToRow = (element) => {
 
   const revitElementIdFromAlt = toText(element?.alternativeIdentifiers?.revitElementId)
   const revitElementId =
-    revitElementIdFromAlt || pickProperty(properties, ["Revit Element ID", "Element Id", "ElementId", "Id"])
-  const category = pickProperty(properties, ["Revit Category Type Id", "Category", "Category Name"])
-  const familyName = pickProperty(properties, ["Family Name", "Family"])
-  const elementName = pickProperty(properties, ["Element Name", "Name"]) || toText(element?.name)
-  const typeMark = pickProperty(properties, ["Type Mark", "Mark"])
-  const description = pickProperty(properties, ["Description", "Type Description"])
-  const model = pickProperty(properties, ["Model", "Model Number", "Modelo"])
-  const manufacturer = pickProperty(properties, ["Manufacturer", "Fabricante"])
-  const assemblyCode = pickProperty(properties, ["Assembly Code", "OmniClass Number"])
-  const assemblyDescription = pickProperty(properties, ["Assembly Description", "OmniClass Title"])
+    revitElementIdFromAlt ||
+    pickProperty(
+      properties,
+      ["Revit Element ID", "Element Id", "ElementId", "Id"],
+      [["revit", "element", "id"], ["element", "id"]]
+    )
+  const category = pickProperty(
+    properties,
+    ["Revit Category Type Id", "Category", "Category Name"],
+    [["category"]]
+  )
+  const familyName = pickProperty(properties, ["Family Name", "Family"], [["family"]])
+  const elementName = pickProperty(properties, ["Element Name", "Name"], [["element", "name"]]) || toText(element?.name)
+  const typeMark = pickProperty(properties, ["Type Mark", "Mark"], [["type", "mark"]])
+  const description = pickProperty(properties, ["Description", "Type Description"], [["description"]])
+  const model = pickProperty(properties, ["Model", "Model Number", "Modelo"], [["model"]])
+  const manufacturer = pickProperty(properties, ["Manufacturer", "Fabricante"], [["manufacturer"], ["fabricante"]])
+  const assemblyCode = pickProperty(
+    properties,
+    ["Assembly Code", "OmniClass Number"],
+    [["assembly", "code"], ["omniclass", "number"]]
+  )
+  const assemblyDescription = pickProperty(
+    properties,
+    ["Assembly Description", "OmniClass Title"],
+    [["assembly", "description"], ["assembly", "desc"], ["omniclass", "title"]]
+  )
 
   const elementId = toText(element?.id)
   const explicitDbId = pickProperty(properties, ["DbId", "dbId", "Db Id"])
@@ -211,6 +289,162 @@ const isFilterSyntaxError = (error) => {
 //   property.name.category==StructuralFraming       ✓ (no quotes needed)
 const quoteIfNeeded = (candidate) => (/\s/.test(candidate) ? `'${candidate}'` : candidate)
 
+const getRowPropertyValue = (row, names = []) => {
+  const wanted = (Array.isArray(names) ? names : [names]).map(normalizeKey).filter(Boolean)
+  if (!wanted.length) return ""
+
+  const props = Array.isArray(row?.rawProperties) ? row.rawProperties : []
+  const hit = props.find((property) => {
+    const label = normalizeKey(
+      toText(property?.name) || toText(property?.definition?.name) || toText(property?.definition?.description)
+    )
+    if (!label) return false
+
+    const labelCompact = compactKey(label)
+    return wanted.some((name) => {
+      const nameCompact = compactKey(name)
+      return (
+        label === name ||
+        labelCompact === nameCompact ||
+        label.includes(name) ||
+        name.includes(label) ||
+        labelCompact.includes(nameCompact) ||
+        nameCompact.includes(labelCompact)
+      )
+    })
+  })
+
+  return toText(hit?.value)
+}
+
+const isInstanceRow = (row) => {
+  const context = normalizeKey(getRowPropertyValue(row, ["Element Context", "Context"]))
+  if (!context) return true
+  return context.includes("instance")
+}
+
+const hasAssemblyData = (row) => Boolean(toText(row?.assemblyCode) || toText(row?.assemblyDescription))
+
+const rowKeyForMatch = (row) => `${normalizeKey(row?.familyName)}|${normalizeKey(row?.elementName)}`
+
+const mergeRowsPreferFilledFields = (base = {}, incoming = {}) => {
+  const baseProps = Array.isArray(base?.rawProperties) ? base.rawProperties : []
+  const incomingProps = Array.isArray(incoming?.rawProperties) ? incoming.rawProperties : []
+
+  return {
+    ...base,
+    ...incoming,
+    viewerDbId: base?.viewerDbId ?? incoming?.viewerDbId ?? null,
+    dbId: toText(base?.dbId) || toText(incoming?.dbId),
+    elementId: toText(base?.elementId) || toText(incoming?.elementId),
+    externalElementId: toText(base?.externalElementId) || toText(incoming?.externalElementId),
+    revitElementId: toText(base?.revitElementId) || toText(incoming?.revitElementId),
+    category: toText(base?.category) || toText(incoming?.category),
+    familyName: toText(base?.familyName) || toText(incoming?.familyName),
+    elementName: toText(base?.elementName) || toText(incoming?.elementName),
+    typeMark: toText(base?.typeMark) || toText(incoming?.typeMark),
+    description: toText(base?.description) || toText(incoming?.description),
+    model: toText(base?.model) || toText(incoming?.model),
+    manufacturer: toText(base?.manufacturer) || toText(incoming?.manufacturer),
+    assemblyCode: toText(base?.assemblyCode) || toText(incoming?.assemblyCode),
+    assemblyDescription: toText(base?.assemblyDescription) || toText(incoming?.assemblyDescription),
+    rawProperties: baseProps.length >= incomingProps.length ? baseProps : incomingProps,
+    compliance: base?.compliance || incoming?.compliance || null,
+    count: Number(base?.count) || Number(incoming?.count) || 1,
+  }
+}
+
+const dedupeRows = (rows = []) => {
+  const byKey = new Map()
+  let fallbackIndex = 0
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const key =
+      toText(row?.revitElementId) ||
+      toText(row?.externalElementId) ||
+      toText(row?.elementId) ||
+      toText(row?.dbId) ||
+      `fallback-${fallbackIndex + 1}`
+
+    if (!byKey.has(key)) {
+      byKey.set(key, row)
+      fallbackIndex += 1
+      continue
+    }
+
+    byKey.set(key, mergeRowsPreferFilledFields(byKey.get(key), row))
+  }
+
+  return Array.from(byKey.values())
+}
+
+const enrichInstanceRowsFromMixedRows = (rows = []) => {
+  const mixedRows = dedupeRows(rows)
+  if (!mixedRows.length) return []
+
+  const instances = mixedRows.filter(isInstanceRow)
+  const typeRows = mixedRows.filter((row) => !isInstanceRow(row) && hasAssemblyData(row))
+  if (!instances.length) return mixedRows.filter(hasAssemblyData)
+  if (!typeRows.length) return instances
+
+  const byFamilyAndElement = new Map()
+  const byElement = new Map()
+  const byFamily = new Map()
+
+  typeRows.forEach((row) => {
+    const family = normalizeKey(row?.familyName)
+    const element = normalizeKey(row?.elementName)
+    const key = rowKeyForMatch(row)
+    if (family && element && !byFamilyAndElement.has(key)) byFamilyAndElement.set(key, row)
+    if (element && !byElement.has(element)) byElement.set(element, row)
+    if (family && !byFamily.has(family)) byFamily.set(family, row)
+  })
+
+  return dedupeRows(
+    instances.map((instance) => {
+      if (hasAssemblyData(instance)) return instance
+
+      const key = rowKeyForMatch(instance)
+      const family = normalizeKey(instance?.familyName)
+      const element = normalizeKey(instance?.elementName)
+      const donor = byFamilyAndElement.get(key) || byElement.get(element) || byFamily.get(family) || null
+
+      if (!donor) return instance
+      return mergeRowsPreferFilledFields(instance, donor)
+    })
+  )
+}
+
+const assemblyCoverage = (rows = []) => {
+  const safeRows = Array.isArray(rows) ? rows : []
+  if (!safeRows.length) return 0
+  return safeRows.filter(hasAssemblyData).length / safeRows.length
+}
+
+const selectBestRows = ({ withContextRows = [], withoutContextRows = [] }) => {
+  const withContextInstances = dedupeRows(withContextRows.filter(isInstanceRow))
+  const withoutContextEnriched = enrichInstanceRowsFromMixedRows(withoutContextRows)
+
+  if (!withContextInstances.length && !withoutContextEnriched.length) {
+    return { rows: [], filterType: "none" }
+  }
+  if (!withContextInstances.length) {
+    return { rows: withoutContextEnriched, filterType: "without_context" }
+  }
+  if (!withoutContextEnriched.length) {
+    return { rows: withContextInstances, filterType: "with_context" }
+  }
+
+  const withCoverage = assemblyCoverage(withContextInstances)
+  const withoutCoverage = assemblyCoverage(withoutContextEnriched)
+
+  if (withoutCoverage > withCoverage) {
+    return { rows: withoutContextEnriched, filterType: "without_context" }
+  }
+
+  return { rows: withContextInstances, filterType: "with_context" }
+}
+
 const resolveRowsForCategory = async ({ token, modelId, category }) => {
   const candidates = buildCategoryCandidates(category)
 
@@ -223,33 +457,62 @@ const resolveRowsForCategory = async ({ token, modelId, category }) => {
   let lastSyntaxError = null
 
   for (const candidate of candidates) {
-    const filters = [withContext(candidate), withoutContext(candidate)]
+    const withFilter = withContext(candidate)
+    const withoutFilter = withoutContext(candidate)
 
-    for (const propertyFilter of filters) {
-      try {
-        const rows = await fetchRowsByPropertyFilter({
-          token,
-          elementGroupId: modelId,
-          propertyFilter,
-        })
+    let withRows = null
+    let withoutRows = null
 
-        if (rows.length > 0) {
-          return { rows, resolvedCategoryToken: candidate, filterQueryUsed: propertyFilter }
-        }
-
-        if (!firstSuccessfulEmpty) {
-          firstSuccessfulEmpty = {
-            rows,
-            resolvedCategoryToken: candidate,
-            filterQueryUsed: propertyFilter,
-          }
-        }
-      } catch (error) {
-        if (isFilterSyntaxError(error)) {
-          lastSyntaxError = error
-          continue
-        }
+    try {
+      withRows = await fetchRowsByPropertyFilter({
+        token,
+        elementGroupId: modelId,
+        propertyFilter: withFilter,
+      })
+    } catch (error) {
+      if (isFilterSyntaxError(error)) {
+        lastSyntaxError = error
+      } else {
         throw error
+      }
+    }
+
+    try {
+      withoutRows = await fetchRowsByPropertyFilter({
+        token,
+        elementGroupId: modelId,
+        propertyFilter: withoutFilter,
+      })
+    } catch (error) {
+      if (isFilterSyntaxError(error)) {
+        lastSyntaxError = error
+      } else {
+        throw error
+      }
+    }
+
+    const hasSuccessfulAttempt = Array.isArray(withRows) || Array.isArray(withoutRows)
+    const safeWithRows = Array.isArray(withRows) ? withRows : []
+    const safeWithoutRows = Array.isArray(withoutRows) ? withoutRows : []
+
+    const selection = selectBestRows({
+      withContextRows: safeWithRows,
+      withoutContextRows: safeWithoutRows,
+    })
+
+    if (selection.rows.length > 0) {
+      return {
+        rows: selection.rows,
+        resolvedCategoryToken: candidate,
+        filterQueryUsed: selection.filterType === "without_context" ? withoutFilter : withFilter,
+      }
+    }
+
+    if (hasSuccessfulAttempt && !firstSuccessfulEmpty) {
+      firstSuccessfulEmpty = {
+        rows: [],
+        resolvedCategoryToken: candidate,
+        filterQueryUsed: withFilter,
       }
     }
   }
@@ -392,6 +655,7 @@ async function fetchModelParametersByCategory(token, projectId, modelId, categor
 
   return {
     modelId,
+    allelements:allElementGroups,
     modelName: selectedModel?.name || null,
     category: normalizedCategory,
     resolvedCategoryToken: resolved.resolvedCategoryToken,
@@ -406,4 +670,32 @@ async function fetchModelParametersByCategory(token, projectId, modelId, categor
   }
 }
 
-module.exports = { fetchModelParametersByCategory }
+async function fetchAllModelParameters(token, projectId, modelId) {
+  if (!token) throw new Error("Missing APS access token")
+  if (!projectId) throw new Error("Missing projectId")
+  if (!modelId) throw new Error("Missing modelId")
+
+  const rows = await fetchRowsByPropertyFilter({
+    token,
+    elementGroupId: modelId,
+    propertyFilter: BULK_CONTEXT_FILTER,
+  })
+
+  const totalElements = rows.length
+  const averageCompliancePct =
+    totalElements > 0
+      ? Math.round(rows.reduce((acc, row) => acc + (row.compliance?.pct || 0), 0) / totalElements)
+      : 0
+
+  return {
+    modelId,
+    rows,
+    summary: {
+      totalElements,
+      averageCompliancePct,
+      fullyCompliant: rows.filter((row) => (row.compliance?.pct || 0) === 100).length,
+    },
+  }
+}
+
+module.exports = { fetchModelParametersByCategory, fetchAllModelParameters }

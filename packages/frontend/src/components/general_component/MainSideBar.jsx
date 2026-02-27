@@ -37,13 +37,13 @@ export default function MainSideBar() {
 
       <nav className="flex-1 p-2">
         <ul className="space-y-1">
-          {ITEMS.map(({ title, url, icon: Icon }) => (
+          {ITEMS.map(({ title, url, icon }) => (
             <li key={title}>
               <Link
                 to={url}
                 className="flex items-center gap-3 rounded p-2 text-gray-700 transition-colors duration-200 hover:bg-red-500 hover:text-white"
               >
-                <Icon className="h-5 w-5" />
+                {icon({ className: "h-5 w-5" })}
                 {!collapsed && <span className="font-medium">{title}</span>}
               </Link>
             </li>
