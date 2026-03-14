@@ -2,14 +2,20 @@ const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL || "http://localhos
 
 const VIEWER_STYLE_ID = "aps-viewer-style";
 const VIEWER_SCRIPT_ID = "aps-viewer-script";
-const ELEMENT_ID_PROP_FILTER = ["Revit Element ID", "Element Id", "ElementId", "Id"];
-const ELEMENT_ID_PROP_NAMES = new Set(
-  ELEMENT_ID_PROP_FILTER.map((name) => String(name).trim().toLowerCase())
-);
+const ELEMENT_ID_PROP_FILTER = ["Revit Element ID", "Revit Element Id", "Element Id", "ElementId", "Id"];
+const ASSEMBLY_CODE_PROP_FILTER = ["Assembly Code", "OmniClass Number"];
+const ASSEMBLY_DESCRIPTION_PROP_FILTER = ["Assembly Description", "OmniClass Title"];
+const DB_ID_PROP_FILTER = ["DbId", "dbId", "Db Id"];
+const SNAPSHOT_PROP_FILTER = [
+  ...ELEMENT_ID_PROP_FILTER,
+  ...ASSEMBLY_CODE_PROP_FILTER,
+  ...ASSEMBLY_DESCRIPTION_PROP_FILTER,
+  ...DB_ID_PROP_FILTER,
+];
 const BULK_PROPS_CHUNK_SIZE = 1000;
 const IN_PROGRESS_MATERIAL_NAME = "wbs-4d-in-progress-material";
 const IN_PROGRESS_COLOR = 0xd92d20;
-const IN_PROGRESS_OPACITY = 0.38;
+const IN_PROGRESS_OPACITY = 0.72;
 const SEQUENCE_STATE_PRIORITY = {
   future: 1,
   completed: 2,
@@ -20,11 +26,15 @@ let viewerInstance = null;
 let assetsPromise = null;
 let viewerElementIdIndex = null;
 let viewerElementIdIndexPromise = null;
+let viewerLeafDbIds = null;
+let viewerLeafDbIdsPromise = null;
 let viewerModelDbIds = null;
 let viewerModelDbIdsPromise = null;
 let fragmentIdsByDbId = new Map();
 let overriddenFragments = new Map();
 let inProgressMaterial = null;
+let lastSequenceStateKey = "";
+let sequenceCleared = false;
 
 const getAutodeskGlobal = () => {
   if (typeof window === "undefined") return null;
@@ -140,11 +150,15 @@ const fetchViewerToken = async () => {
 const resetViewerCaches = () => {
   viewerElementIdIndex = null;
   viewerElementIdIndexPromise = null;
+  viewerLeafDbIds = null;
+  viewerLeafDbIdsPromise = null;
   viewerModelDbIds = null;
   viewerModelDbIdsPromise = null;
   fragmentIdsByDbId = new Map();
   overriddenFragments = new Map();
   inProgressMaterial = null;
+  lastSequenceStateKey = "";
+  sequenceCleared = false;
 };
 
 const parsePositiveDbId = (value) => {
@@ -161,6 +175,20 @@ const parsePositiveDbId = (value) => {
   return parsed;
 };
 
+const toPropertyLookupKey = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+
+const makePropertyNameSet = (names = []) =>
+  new Set((Array.isArray(names) ? names : [names]).map(toPropertyLookupKey).filter(Boolean));
+
+const ELEMENT_ID_PROP_NAMES = makePropertyNameSet(ELEMENT_ID_PROP_FILTER);
+const ASSEMBLY_CODE_PROP_NAMES = makePropertyNameSet(ASSEMBLY_CODE_PROP_FILTER);
+const ASSEMBLY_DESCRIPTION_PROP_NAMES = makePropertyNameSet(ASSEMBLY_DESCRIPTION_PROP_FILTER);
+const DB_ID_PROP_NAMES = makePropertyNameSet(DB_ID_PROP_FILTER);
+
 const toValidDbIds = (dbIds = []) =>
   Array.from(
     new Set(
@@ -169,6 +197,11 @@ const toValidDbIds = (dbIds = []) =>
         .filter((id) => Number.isFinite(id) && id > 0)
     )
   );
+
+const buildDbIdSignature = (dbIds = []) =>
+  toValidDbIds(dbIds)
+    .sort((left, right) => left - right)
+    .join(",");
 
 const normalizeElementIdKeys = (value) => {
   const raw = String(value || "").trim();
@@ -181,6 +214,31 @@ const normalizeElementIdKeys = (value) => {
   }
 
   return Array.from(keys);
+};
+
+const toNullableText = (value) => {
+  const text = String(value ?? "").trim();
+  return text ? text : null;
+};
+
+const normalizeElementIdValue = (value) => {
+  const keys = normalizeElementIdKeys(value);
+  if (!keys.length) return null;
+  return keys.find((key) => /^\d+$/.test(String(key || ""))) || keys[0] || null;
+};
+
+const getPropertyLookupKey = (property = {}) =>
+  toPropertyLookupKey(property?.displayName || property?.attributeName || property?.name || "");
+
+const pickPropertyValueFromList = (properties = [], allowedNames = new Set()) => {
+  const list = Array.isArray(properties) ? properties : [];
+  for (const property of list) {
+    if (!allowedNames.has(getPropertyLookupKey(property))) continue;
+    const value = property?.displayValue ?? property?.value ?? "";
+    const text = String(value ?? "").trim();
+    if (text) return text;
+  }
+  return "";
 };
 
 const getBulkPropertiesAsync = (model, dbIds, propFilter = ELEMENT_ID_PROP_FILTER) => {
@@ -221,16 +279,52 @@ const collectAllViewerDbIds = (model) => {
   return toValidDbIds(ids);
 };
 
+const collectLeafViewerDbIds = (model) => {
+  const tree = getInstanceTree(model);
+  if (!tree) {
+    throw new Error("Viewer object tree is not available");
+  }
+
+  const rootId = tree.getRootId();
+  if (!Number.isFinite(rootId) || rootId <= 0) return [];
+
+  const leafIds = [];
+  const stack = [rootId];
+
+  while (stack.length > 0) {
+    const currentDbId = stack.pop();
+    if (!Number.isFinite(currentDbId) || currentDbId <= 0) continue;
+
+    const directChildren = [];
+    tree.enumNodeChildren(
+      currentDbId,
+      (childDbId) => {
+        if (Number.isFinite(childDbId) && childDbId > 0) {
+          directChildren.push(childDbId);
+        }
+      },
+      false
+    );
+
+    if (!directChildren.length) {
+      leafIds.push(currentDbId);
+      continue;
+    }
+
+    for (let i = directChildren.length - 1; i >= 0; i -= 1) {
+      stack.push(directChildren[i]);
+    }
+  }
+
+  return toValidDbIds(leafIds);
+};
+
 const extractElementIdKeysFromBulkResult = (result) => {
   const keys = new Set();
   const properties = Array.isArray(result?.properties) ? result.properties : [];
 
   properties.forEach((property) => {
-    const name = String(property?.displayName || property?.attributeName || property?.name || "")
-      .trim()
-      .toLowerCase();
-
-    if (!ELEMENT_ID_PROP_NAMES.has(name)) return;
+    if (!ELEMENT_ID_PROP_NAMES.has(getPropertyLookupKey(property))) return;
 
     const value = property?.displayValue ?? property?.value ?? "";
     normalizeElementIdKeys(value).forEach((key) => keys.add(key));
@@ -283,6 +377,27 @@ const getViewerElementIdIndex = async () => {
   return viewerElementIdIndexPromise;
 };
 
+const getViewerLeafDbIds = async () => {
+  if (viewerLeafDbIds) return viewerLeafDbIds;
+
+  if (!viewerLeafDbIdsPromise) {
+    viewerLeafDbIdsPromise = Promise.resolve()
+      .then(() => {
+        if (!viewerInstance?.model) throw new Error("Viewer model is not available");
+        return collectLeafViewerDbIds(viewerInstance.model);
+      })
+      .then((dbIds) => {
+        viewerLeafDbIds = dbIds;
+        return dbIds;
+      })
+      .finally(() => {
+        viewerLeafDbIdsPromise = null;
+      });
+  }
+
+  return viewerLeafDbIdsPromise;
+};
+
 const getViewerModelDbIds = async () => {
   if (viewerModelDbIds) return viewerModelDbIds;
 
@@ -313,8 +428,7 @@ const extractElementIdKeysFromRow = (row) => {
 
   const rawProperties = Array.isArray(row?.rawProperties) ? row.rawProperties : [];
   rawProperties.forEach((property) => {
-    const name = String(property?.name || "").trim().toLowerCase();
-    if (!ELEMENT_ID_PROP_NAMES.has(name)) return;
+    if (!ELEMENT_ID_PROP_NAMES.has(toPropertyLookupKey(property?.name))) return;
     normalizeElementIdKeys(property?.value).forEach((key) => keys.add(key));
   });
 
@@ -326,8 +440,7 @@ const extractDirectViewerDbIdFromRow = (row) => {
 
   const rawProperties = Array.isArray(row?.rawProperties) ? row.rawProperties : [];
   rawProperties.forEach((property) => {
-    const name = String(property?.name || "").trim().toLowerCase();
-    if (name === "dbid" || name === "db id") {
+    if (DB_ID_PROP_NAMES.has(toPropertyLookupKey(property?.name))) {
       candidates.push(property?.value);
     }
   });
@@ -414,9 +527,9 @@ const ensureInProgressMaterial = () => {
 
   const material = new THREE.MeshPhongMaterial({
     color: IN_PROGRESS_COLOR,
-    transparent: true,
+    transparent: false,
     opacity: IN_PROGRESS_OPACITY,
-    depthWrite: false,
+    depthWrite: true,
     side: THREE.DoubleSide,
   });
   material.name = IN_PROGRESS_MATERIAL_NAME;
@@ -455,6 +568,28 @@ const applyMaterialToDbIds = (dbIds = []) => {
   });
 
   viewerInstance.impl?.invalidate?.(true, true, true);
+};
+
+const configureViewerVisualState = (viewer) => {
+  if (!viewer) return;
+
+  try {
+    viewer.setGhosting?.(false);
+  } catch {
+    // Ignore unsupported viewer APIs.
+  }
+
+  try {
+    viewer.impl?.toggleGhosting?.(false);
+  } catch {
+    // Ignore unsupported viewer APIs.
+  }
+
+  try {
+    viewer.prefs?.set?.("ghosting", false);
+  } catch {
+    // Ignore unsupported viewer APIs.
+  }
 };
 
 const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
@@ -534,6 +669,89 @@ const applyVisibilityState = async (visibleDbIds = []) => {
   if (validVisibleDbIds.length) viewerInstance.show?.(validVisibleDbIds);
 };
 
+const mapBulkResultToViewerSnapshotRow = (result = {}) => {
+  const dbId = parsePositiveDbId(result?.dbId);
+  if (!dbId) return null;
+
+  const properties = Array.isArray(result?.properties) ? result.properties : [];
+  return {
+    dbId,
+    revitElementId: normalizeElementIdValue(pickPropertyValueFromList(properties, ELEMENT_ID_PROP_NAMES)),
+    assemblyCode: toNullableText(pickPropertyValueFromList(properties, ASSEMBLY_CODE_PROP_NAMES)),
+    assemblyDescription: toNullableText(
+      pickPropertyValueFromList(properties, ASSEMBLY_DESCRIPTION_PROP_NAMES)
+    ),
+  };
+};
+
+export const isProjectWbs4DViewerReady = () => Boolean(viewerInstance?.model);
+
+export const extractProjectWbs4DViewerLeafSnapshot = async () => {
+  if (!viewerInstance) throw new Error("Viewer is not initialized");
+  if (!viewerInstance.model) throw new Error("Viewer model is still loading");
+
+  const model = viewerInstance.model;
+  const leafDbIds = await getViewerLeafDbIds();
+  const rowsByDbId = new Map();
+
+  let skippedRows = 0;
+  let missingElementIdRows = 0;
+  let missingAssemblyDataRows = 0;
+
+  for (let i = 0; i < leafDbIds.length; i += BULK_PROPS_CHUNK_SIZE) {
+    const chunk = leafDbIds.slice(i, i + BULK_PROPS_CHUNK_SIZE);
+    const results = await getBulkPropertiesAsync(model, chunk, SNAPSHOT_PROP_FILTER);
+
+    results.forEach((result) => {
+      const row = mapBulkResultToViewerSnapshotRow(result);
+      if (!row?.dbId) {
+        skippedRows += 1;
+        return;
+      }
+
+      const hasElementId = Boolean(row.revitElementId);
+      const hasAssemblyData = Boolean(row.assemblyCode || row.assemblyDescription);
+      const hasUsefulData = hasElementId || hasAssemblyData;
+
+      if (!hasElementId) missingElementIdRows += 1;
+      if (!hasAssemblyData) missingAssemblyDataRows += 1;
+
+      if (!hasUsefulData) {
+        skippedRows += 1;
+        return;
+      }
+
+      const existing = rowsByDbId.get(row.dbId);
+      if (!existing) {
+        rowsByDbId.set(row.dbId, row);
+        return;
+      }
+
+      rowsByDbId.set(row.dbId, {
+        dbId: row.dbId,
+        revitElementId: existing.revitElementId || row.revitElementId || null,
+        assemblyCode: existing.assemblyCode || row.assemblyCode || null,
+        assemblyDescription: existing.assemblyDescription || row.assemblyDescription || null,
+      });
+    });
+  }
+
+  const rows = Array.from(rowsByDbId.values());
+  const matchableRows = rows.filter((row) => row.assemblyCode || row.assemblyDescription).length;
+
+  return {
+    rows,
+    stats: {
+      totalLeafNodes: leafDbIds.length,
+      extractedRows: rows.length,
+      matchableRows,
+      missingElementIdRows,
+      missingAssemblyDataRows,
+      skippedRows,
+    },
+  };
+};
+
 export const resolveProjectWbs4DViewerDbIdsForRows = async (rows = []) => {
   if (!viewerInstance) throw new Error("Viewer is not initialized");
   if (!viewerInstance.model) throw new Error("Viewer model is still loading");
@@ -592,6 +810,7 @@ export const resolveProjectWbs4DViewerDbIdsForRows = async (rows = []) => {
 
 export const clearProjectWbs4DSequence = () => {
   if (!viewerInstance) return;
+  if (sequenceCleared && overriddenFragments.size === 0) return;
 
   restoreOverriddenFragments();
 
@@ -599,6 +818,8 @@ export const clearProjectWbs4DSequence = () => {
     viewerInstance.showAll?.();
     viewerInstance.clearSelection?.();
     viewerInstance.impl?.invalidate?.(true, true, true);
+    lastSequenceStateKey = "";
+    sequenceCleared = true;
   } catch {
     return;
   }
@@ -625,10 +846,17 @@ export const applyProjectWbs4DSequence = async ({ currentDate, items = [] } = {}
     currentDate,
     items,
   });
+  const nextSequenceStateKey = `${buildDbIdSignature(visibleDbIds)}|${buildDbIdSignature(inProgressDbIds)}`;
+
+  if (!sequenceCleared && nextSequenceStateKey === lastSequenceStateKey) {
+    return;
+  }
 
   restoreOverriddenFragments();
   await applyVisibilityState(visibleDbIds);
   applyMaterialToDbIds(inProgressDbIds);
+  lastSequenceStateKey = nextSequenceStateKey;
+  sequenceCleared = false;
 };
 
 export const initProjectWbs4DViewer = async (urn, containerId = "WBS4DViewer") => {
@@ -687,6 +915,7 @@ export const initProjectWbs4DViewer = async (urn, containerId = "WBS4DViewer") =
             .then(() => {
               viewerInstance = viewer;
               resetViewerCaches();
+              configureViewerVisualState(viewer);
 
               const rootViewerNode = container.querySelector(".adsk-viewing-viewer");
               if (rootViewerNode) {

@@ -16,13 +16,17 @@ import WBSPlannerTable from "@/components/aec_model_components/WBSPlannerTable";
 import {
   applyProjectWbs4DSequence,
   clearProjectWbs4DSequence,
+  extractProjectWbs4DViewerLeafSnapshot,
   initProjectWbs4DViewer,
+  isProjectWbs4DViewerReady,
   resolveProjectWbs4DViewerDbIdsForRows,
   teardownProjectWbs4DViewer,
 } from "@/utils/viewers/project-wbs-4d.viewer";
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL;
 const VIEWER_CONTAINER_ID = "WBS4DViewer";
+const MATCH_SNAPSHOT_VIEWER_CONTAINER_ID = "WBS4DViewerMatchSnapshot";
+const PLAY_INTERVAL_MS = 650;
 
 const hasViewerVersionUrn = (urn) => String(urn || "").includes("urn:adsk.wipprod:fs.file:vf.");
 const toText = (value) => String(value ?? "").trim();
@@ -117,6 +121,33 @@ const toPositiveInt = (value) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+const ensureTemporaryViewerContainer = (containerId) => {
+  if (typeof document === "undefined") return { created: false };
+  let container = document.getElementById(containerId);
+  if (container) return { created: false, container };
+
+  container = document.createElement("div");
+  container.id = containerId;
+  container.dataset.temporaryViewer = "true";
+  container.style.position = "fixed";
+  container.style.left = "-10000px";
+  container.style.top = "0";
+  container.style.width = "1px";
+  container.style.height = "1px";
+  container.style.opacity = "0";
+  container.style.pointerEvents = "none";
+  document.body.appendChild(container);
+  return { created: true, container };
+};
+
+const removeTemporaryViewerContainer = (containerId) => {
+  if (typeof document === "undefined") return;
+  const container = document.getElementById(containerId);
+  if (container?.dataset?.temporaryViewer === "true") {
+    container.remove();
+  }
+};
+
 const getModelUrn = (model) => {
   const candidates = [
     model?.alternativeIdentifiers?.fileVersionUrn,
@@ -181,6 +212,13 @@ const sortWbsRows = (rows = []) =>
     const rightId = toText(right?.id);
     return leftId.localeCompare(rightId);
   });
+
+const attachMatrixParseMeta = (rows = [], meta = {}) => {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  safeRows.invalidRows = Number(meta?.invalidRows) || 0;
+  safeRows.errorMessage = toText(meta?.errorMessage);
+  return safeRows;
+};
 
 const parseMoney = (value) => {
   if (value === undefined || value === null || value === "") return null;
@@ -336,7 +374,7 @@ const parseLegacyWbsRowsFromMatrix = (matrix = [], headerRowIndex = -1) => {
 };
 
 const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
-  if (!Array.isArray(matrix) || !matrix.length) return [];
+  if (!Array.isArray(matrix) || !matrix.length) return attachMatrixParseMeta([]);
 
   const headerRow = Array.isArray(matrix[headerRowIndex]) ? matrix[headerRowIndex] : [];
   const headers = headerRow.map((cell) => normalizeHeaderLabel(cell));
@@ -355,18 +393,44 @@ const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
     actualProgressPct: findColumnIndex(headers, WBS_HEADER_ALIASES.actualProgressPct),
   };
 
-  if (indexes.code < 0 || indexes.title < 0) return [];
+  if (indexes.level < 0 || indexes.code < 0 || indexes.title < 0) {
+    return attachMatrixParseMeta([], {
+      errorMessage: "El Excel WBS debe incluir al menos las columnas Nivel, Codigo y Actividad.",
+    });
+  }
 
   const seen = new Set();
   const rows = [];
+  let invalidRows = 0;
+  const relevantIndexes = Object.values(indexes).filter((index) => index >= 0);
 
   matrix.slice(headerRowIndex + 1).forEach((rawRow, idx) => {
     const row = Array.isArray(rawRow) ? rawRow : [];
+    const hasContent = relevantIndexes.some((index) => toText(row[index]));
+    if (!hasContent) return;
+
     const code = normalizeWbsCode(row[indexes.code]);
     const title = toText(row[indexes.title]);
-    const level = toPositiveInt(row[indexes.level]) || getWbsLevel(code);
+    const level = toPositiveInt(row[indexes.level]);
+    const codeLevel = getWbsLevel(code);
+    const invalidDateCell = [indexes.startDate, indexes.endDate, indexes.actualStartDate, indexes.actualEndDate]
+      .filter((index) => index >= 0)
+      .some((index) => toText(row[index]) && !parseDateToIso(row[index]));
 
-    if (!isValidWbsCode(code) || !title || !level || level > 4 || seen.has(code)) return;
+    if (
+      !isValidWbsCode(code) ||
+      !title ||
+      !level ||
+      level > 4 ||
+      !codeLevel ||
+      codeLevel !== level ||
+      seen.has(code) ||
+      invalidDateCell
+    ) {
+      invalidRows += 1;
+      return;
+    }
+
     seen.add(code);
 
     const startDate = parseDateToIso(row[indexes.startDate]);
@@ -389,7 +453,12 @@ const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
     });
   });
 
-  return sortWbsRows(rows);
+  const parsedRows = attachMatrixParseMeta(sortWbsRows(rows), { invalidRows });
+  if (!parsedRows.length && invalidRows > 0 && !parsedRows.errorMessage) {
+    parsedRows.errorMessage =
+      "Se detectaron filas WBS, pero ninguna fue valida. Revisa Nivel, Codigo, Actividad y fechas.";
+  }
+  return parsedRows;
 };
 
 const buildSequentialProjectCode = (level, counters) => {
@@ -541,41 +610,27 @@ const parseProjectWbsRowsFromMatrix = (matrix = []) => {
 };
 
 const parseWbsRowsFromMatrix = (matrix = []) => {
-  if (!Array.isArray(matrix) || !matrix.length) return [];
+  if (!Array.isArray(matrix) || !matrix.length) return attachMatrixParseMeta([]);
 
   const headerRowIndex = findHeaderRowIndex(matrix, (row) => {
     const headers = (Array.isArray(row) ? row : []).map((cell) => normalizeHeaderLabel(cell));
-    const hasLegacyLevels =
-      findColumnIndex(headers, ["nivel 1"]) >= 0 ||
-      findColumnIndex(headers, ["nivel 2"]) >= 0 ||
-      findColumnIndex(headers, ["nivel 3"]) >= 0 ||
-      findColumnIndex(headers, ["nivel 4"]) >= 0;
-
     return (
-      hasLegacyLevels ||
-      (
-        findColumnIndex(headers, WBS_HEADER_ALIASES.code) >= 0 &&
-        findColumnIndex(headers, WBS_HEADER_ALIASES.title) >= 0
-      )
+      findColumnIndex(headers, WBS_HEADER_ALIASES.level) >= 0 &&
+      findColumnIndex(headers, WBS_HEADER_ALIASES.code) >= 0 &&
+      findColumnIndex(headers, WBS_HEADER_ALIASES.title) >= 0
     );
   });
 
-  if (headerRowIndex >= 0) {
-    const headerRow = Array.isArray(matrix[headerRowIndex]) ? matrix[headerRowIndex] : [];
-    const headers = headerRow.map((cell) => normalizeHeaderLabel(cell));
-    const hasLegacyLevels =
-      findColumnIndex(headers, ["nivel 1"]) >= 0 ||
-      findColumnIndex(headers, ["nivel 2"]) >= 0 ||
-      findColumnIndex(headers, ["nivel 3"]) >= 0 ||
-      findColumnIndex(headers, ["nivel 4"]) >= 0;
-
-    if (hasLegacyLevels) return parseLegacyWbsRowsFromMatrix(matrix, headerRowIndex);
-
-    const structuredRows = parseStructuredWbsRowsFromMatrix(matrix, headerRowIndex);
-    if (structuredRows.length) return structuredRows;
+  if (headerRowIndex < 0) {
+    const legacyRows = parseLegacyWbsRowsFromMatrix(matrix);
+    return attachMatrixParseMeta([], {
+      errorMessage: legacyRows.length
+        ? "Se detecto el formato jerarquico anterior. Usa el nuevo formato plano con columnas Nivel, Codigo y Actividad."
+        : "No se detecto un formato WBS valido. Se requieren columnas Nivel, Codigo y Actividad en una estructura plana por fila.",
+    });
   }
 
-  return parseLegacyWbsRowsFromMatrix(matrix);
+  return parseStructuredWbsRowsFromMatrix(matrix, headerRowIndex);
 };
 
 const addDaysIso = (iso, days) => {
@@ -802,6 +857,7 @@ export default function AECProjectWBSPlannerPage() {
   const projectFileInputRef = useRef(null);
   const [resolvedViewerDbIds, setResolvedViewerDbIds] = useState({});
   const requestDedupRef = useRef(new Map());
+  const plannerStateRequestRef = useRef(0);
 
   const apiBase = (backendUrl || "").replace(/\/$/, "");
   const pId = encodeURIComponent(projectId || "");
@@ -840,8 +896,15 @@ export default function AECProjectWBSPlannerPage() {
 
   const timelineMin = toText(matchRun?.timeline?.minDate);
   const timelineMax = toText(matchRun?.timeline?.maxDate);
+  const timelineControlMax = useMemo(
+    () => (isIsoDate(timelineMax) ? addDaysIso(timelineMax, 1) : ""),
+    [timelineMax]
+  );
   const hasTimelineRange = isIsoDate(timelineMin) && isIsoDate(timelineMax);
-  const timelineRangeDays = useMemo(() => diffDaysIso(timelineMin, timelineMax), [timelineMin, timelineMax]);
+  const timelineRangeDays = useMemo(
+    () => diffDaysIso(timelineMin, timelineControlMax || timelineMax),
+    [timelineMin, timelineMax, timelineControlMax]
+  );
   const timelineSliderValue = useMemo(() => {
     if (!timelineMin || !timelineDate) return 0;
     return diffDaysIso(timelineMin, timelineDate);
@@ -925,9 +988,13 @@ export default function AECProjectWBSPlannerPage() {
 
   const loadPlannerState = useCallback(
     async (modelId) => {
+      const requestId = plannerStateRequestRef.current + 1;
+      plannerStateRequestRef.current = requestId;
       setLoadingWbs(true);
       try {
         const [wbsJson, matchJson] = await Promise.all([fetchLatestWbs(modelId), fetchLatestMatch(modelId)]);
+        if (plannerStateRequestRef.current !== requestId) return;
+
         if (wbsJson?.found) {
           setWbsRows(hydrateWbsRows(wbsJson?.data?.rows));
           setSourceFileName(toText(wbsJson?.data?.wbsSet?.sourceFileName));
@@ -939,7 +1006,9 @@ export default function AECProjectWBSPlannerPage() {
         }
         setMatchRun(matchJson?.found ? matchJson.data : null);
       } finally {
-        setLoadingWbs(false);
+        if (plannerStateRequestRef.current === requestId) {
+          setLoadingWbs(false);
+        }
       }
     },
     [fetchLatestWbs, fetchLatestMatch]
@@ -1018,25 +1087,72 @@ export default function AECProjectWBSPlannerPage() {
       return;
     }
 
+    if (!selectedUrn) {
+      toast.warning("Selecciona un modelo con URN valida para extraer el snapshot del viewer.");
+      return;
+    }
+
+    if (viewMode === "viewer" && loadingViewer) {
+      toast.warning("Espera a que el viewer termine de cargar antes de emparejar.");
+      return;
+    }
+
     setRunningMatch(true);
+    let initializedTemporaryViewer = false;
+    let createdTemporaryContainer = false;
     try {
+      let snapshotSource = "active_viewer";
+      if (!isProjectWbs4DViewerReady()) {
+        const tempContainer = ensureTemporaryViewerContainer(MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
+        createdTemporaryContainer = tempContainer.created;
+        await initProjectWbs4DViewer(selectedUrn, MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
+        initializedTemporaryViewer = true;
+        snapshotSource = "temporary_viewer";
+      }
+
+      const snapshot = await extractProjectWbs4DViewerLeafSnapshot();
+      const snapshotRows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+      const snapshotStats = snapshot?.stats || {};
+      const matchableRows = Number(snapshotStats?.matchableRows) || 0;
+
+      if (!snapshotRows.length) {
+        throw new Error("El viewer no devolvio nodos hoja utiles para el matching.");
+      }
+
+      if (matchableRows <= 0) {
+        throw new Error("El snapshot del viewer no contiene Assembly Code/Description suficientes para hacer match.");
+      }
+
       const res = await fetch(`${apiBase}/aec/${pId}/wbs/match/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ modelId: selectedModelId, wbsSetId }),
+        body: JSON.stringify({
+          modelId: selectedModelId,
+          wbsSetId,
+          viewerSnapshot: snapshotRows,
+        }),
       });
       const json = await safeJson(res);
       if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "Failed to run matching");
+      toast.info(
+        `Snapshot viewer (${snapshotSource}): hojas ${snapshotStats.totalLeafNodes || 0}, utiles ${snapshotStats.extractedRows || 0}, matcheables ${matchableRows}, omitidos ${snapshotStats.skippedRows || 0}`
+      );
       toast.success(`Matching listo: ${json?.data?.matchedElements || 0}/${json?.data?.totalElements || 0}`);
       const latest = await fetchLatestMatch(selectedModelId);
       setMatchRun(latest?.found ? latest.data : null);
     } catch (err) {
       toast.error(err?.message || "No se pudo ejecutar matching.");
     } finally {
+      if (initializedTemporaryViewer) {
+        teardownProjectWbs4DViewer();
+      }
+      if (createdTemporaryContainer) {
+        removeTemporaryViewerContainer(MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
+      }
       setRunningMatch(false);
     }
-  }, [apiBase, pId, selectedModelId, wbsSetId, fetchLatestMatch]);
+  }, [apiBase, pId, selectedModelId, wbsSetId, selectedUrn, viewMode, loadingViewer, fetchLatestMatch]);
 
   const openModelDialog = async () => {
     setIsModelDialogOpen(true);
@@ -1061,7 +1177,7 @@ export default function AECProjectWBSPlannerPage() {
 
       const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
       const parsedRows = parser(matrix);
-      if (!parsedRows.length) throw new Error(emptyMessage);
+      if (!parsedRows.length) throw new Error(parsedRows?.errorMessage || emptyMessage);
 
       setWbsRows(parsedRows);
       setSourceFileName(file.name);
@@ -1070,6 +1186,9 @@ export default function AECProjectWBSPlannerPage() {
         name: importName,
       });
       await loadPlannerState(selectedModelId);
+      if (Number(parsedRows?.invalidRows) > 0) {
+        toast.warning(`Se omitieron ${parsedRows.invalidRows} filas invalidas durante la importacion.`);
+      }
       toast.success(successMessage(parsedRows.length));
     },
     [loadPlannerState, persistWbs, selectedModelId]
@@ -1084,7 +1203,8 @@ export default function AECProjectWBSPlannerPage() {
         await importSpreadsheetRows({
           file,
           parser: parseWbsRowsFromMatrix,
-          emptyMessage: "No se detectaron filas WBS validas hasta nivel 4",
+          emptyMessage:
+            "No se detectaron filas WBS validas. El archivo debe incluir Nivel, Codigo, Actividad, Inicio Planeado, Fin Planeado, Inicio Real, Fin Real, Costo y Duracion.",
           importName: "WBS Import",
           successMessage: (count) => `WBS guardada (${count} filas)`,
         });
@@ -1325,6 +1445,16 @@ export default function AECProjectWBSPlannerPage() {
   }, [selectedModelId, loadPlannerState]);
 
   useEffect(() => {
+    setPlaying(false);
+    setTimelineDate("");
+    setMatchRun(null);
+    setResolvedViewerDbIds({});
+    teardownProjectWbs4DViewer();
+    clearProjectWbs4DSequence();
+    removeTemporaryViewerContainer(MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
+  }, [selectedModelId]);
+
+  useEffect(() => {
     if (typeof window !== "undefined" && selectedModelId) {
       window.sessionStorage.setItem(selectionStorageKey, String(selectedModelId));
     }
@@ -1366,8 +1496,14 @@ export default function AECProjectWBSPlannerPage() {
       return;
     }
 
-    setTimelineDate((prev) => (isIsoDate(prev) ? prev : timelineMin));
-  }, [timelineMin, timelineMax]);
+    const maxControlDate = timelineControlMax || timelineMax;
+    setTimelineDate((prev) => {
+      if (!isIsoDate(prev)) return timelineMin;
+      if (prev < timelineMin) return timelineMin;
+      if (isIsoDate(maxControlDate) && prev > maxControlDate) return maxControlDate;
+      return prev;
+    });
+  }, [timelineMin, timelineMax, timelineControlMax]);
 
   useEffect(() => {
     if (viewMode !== "viewer" || !selectedUrn || loadingViewer || !matchRun?.rows?.length) {
@@ -1430,21 +1566,22 @@ export default function AECProjectWBSPlannerPage() {
   }, [viewMode]);
 
   useEffect(() => {
-    if (!playing || !timelineMin || !timelineMax) return undefined;
+    const maxControlDate = timelineControlMax || timelineMax;
+    if (!playing || !timelineMin || !maxControlDate) return undefined;
 
     const timer = window.setInterval(() => {
       setTimelineDate((prev) => {
         const next = addDaysIso(isIsoDate(prev) ? prev : timelineMin, 1);
-        if (!next || next > timelineMax) {
+        if (!next || next > maxControlDate) {
           setPlaying(false);
-          return timelineMax;
+          return maxControlDate;
         }
         return next;
       });
-    }, 1200);
+    }, PLAY_INTERVAL_MS);
 
     return () => window.clearInterval(timer);
-  }, [playing, timelineMin, timelineMax]);
+  }, [playing, timelineMin, timelineMax, timelineControlMax]);
 
   useEffect(() => {
     if (viewMode !== "viewer") setPlaying(false);
@@ -1613,7 +1750,7 @@ export default function AECProjectWBSPlannerPage() {
                 <input
                   type="date"
                   min={timelineMin || undefined}
-                  max={timelineMax || undefined}
+                  max={timelineControlMax || timelineMax || undefined}
                   value={timelineDate}
                   disabled={!hasTimelineRange}
                   onChange={(event) => {
@@ -1645,7 +1782,7 @@ export default function AECProjectWBSPlannerPage() {
               <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
                 <span>Inicio: {formatIso(timelineMin)}</span>
                 <span>Actual: {formatIso(timelineDate)}</span>
-                <span>Fin: {formatIso(timelineMax)}</span>
+                <span>Fin: {formatIso(timelineControlMax || timelineMax)}</span>
               </div>
             </div>
           </div>

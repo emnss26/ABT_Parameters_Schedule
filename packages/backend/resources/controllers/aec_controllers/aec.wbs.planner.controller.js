@@ -353,6 +353,29 @@ const normalizeLiveElementForMatching = (row = {}) => ({
   category_id: "",
 });
 
+const normalizeViewerSnapshotElementForMatching = (row = {}) => {
+  const viewerDbId = parsePositiveInt(row.dbId ?? row.viewerDbId);
+  return {
+    element_row_id: null,
+    check_id: null,
+    revit_element_id: toText(row.revitElementId) || null,
+    category: toText(row.category) || null,
+    family_name: toText(row.familyName) || null,
+    element_name: toText(row.elementName) || null,
+    assembly_code: toText(row.assemblyCode) || null,
+    assembly_description: toText(row.assemblyDescription) || null,
+    extra_props: {
+      viewerDbId,
+      dbId: viewerDbId ? String(viewerDbId) : toText(row.dbId) || null,
+      elementId: toText(row.elementId) || null,
+      externalElementId: toText(row.externalElementId) || null,
+      source: "viewer_snapshot",
+    },
+    discipline_id: "",
+    category_id: "",
+  };
+};
+
 const mergeElementRows = (current, incoming) => {
   const currentExtra = parseJson(current.extra_props) || {};
   const incomingExtra = parseJson(incoming.extra_props) || {};
@@ -412,16 +435,85 @@ const deduplicateModelElements = (elements = []) => {
   return Array.from(byKey.values());
 };
 
+const buildViewerSnapshotElements = (rows = []) => {
+  const byViewerDbId = new Map();
+  let invalidDbIdRows = 0;
+  let skippedRows = 0;
+
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const viewerDbId = parsePositiveInt(row?.dbId ?? row?.viewerDbId);
+    if (!viewerDbId) {
+      invalidDbIdRows += 1;
+      continue;
+    }
+
+    const normalized = normalizeViewerSnapshotElementForMatching({
+      ...row,
+      dbId: viewerDbId,
+      viewerDbId,
+    });
+
+    const hasUsefulData =
+      toText(normalized.revit_element_id) ||
+      toText(normalized.assembly_code) ||
+      toText(normalized.assembly_description);
+
+    if (!hasUsefulData) {
+      skippedRows += 1;
+      continue;
+    }
+
+    const key = `db:${viewerDbId}`;
+    if (!byViewerDbId.has(key)) {
+      byViewerDbId.set(key, normalized);
+      continue;
+    }
+
+    byViewerDbId.set(key, mergeElementRows(byViewerDbId.get(key), normalized));
+  }
+
+  const elements = Array.from(byViewerDbId.values());
+  return {
+    elements,
+    stats: {
+      receivedRows: Array.isArray(rows) ? rows.length : 0,
+      usableRows: elements.length,
+      invalidDbIdRows,
+      skippedRows,
+      matchableRows: elements.filter(
+        (element) => toText(element.assembly_code) || toText(element.assembly_description)
+      ).length,
+    },
+  };
+};
+
 const hasAssemblyData = (elements = []) =>
   elements.some((element) => toText(element?.assembly_code) || toText(element?.assembly_description));
 
-const fetchModelElementsForMatching = async ({ token, projectId, modelId }) => {
+const fetchModelElementsForMatching = async ({ token, projectId, modelId, viewerSnapshot }) => {
+  if (Array.isArray(viewerSnapshot)) {
+    const normalizedViewerSnapshot = buildViewerSnapshotElements(viewerSnapshot);
+    if (normalizedViewerSnapshot.elements.length > 0) {
+      return {
+        elements: normalizedViewerSnapshot.elements,
+        source: "viewer_snapshot",
+        viewerSnapshotStats: normalizedViewerSnapshot.stats,
+      };
+    }
+
+    return {
+      elements: [],
+      source: "viewer_snapshot",
+      viewerSnapshotStats: normalizedViewerSnapshot.stats,
+    };
+  }
+
   const stored = deduplicateModelElements(
     (await fetchLatestModelParameterElements({ projectId, modelId })).map(normalizeStoredElementForMatching)
   );
 
   if (stored.length && hasAssemblyData(stored)) {
-    return { elements: stored, source: "stored_parameter_checks" };
+    return { elements: stored, source: "stored_parameter_checks", viewerSnapshotStats: null };
   }
 
   if (token) {
@@ -429,7 +521,7 @@ const fetchModelElementsForMatching = async ({ token, projectId, modelId }) => {
       const live = await fetchAllModelParameters(token, String(projectId), String(modelId));
       const liveElements = deduplicateModelElements((live?.rows || []).map(normalizeLiveElementForMatching));
       if (liveElements.length) {
-        return { elements: liveElements, source: "live_model_query" };
+        return { elements: liveElements, source: "live_model_query", viewerSnapshotStats: null };
       }
     } catch (err) {
       if (!stored.length) throw err;
@@ -439,6 +531,7 @@ const fetchModelElementsForMatching = async ({ token, projectId, modelId }) => {
   return {
     elements: stored,
     source: stored.length ? "stored_parameter_checks" : "none",
+    viewerSnapshotStats: null,
   };
 };
 
@@ -696,6 +789,7 @@ const RunWbsModelMatching = async (req, res, next) => {
   const { projectId } = req.params;
   const modelId = toText(req.body?.modelId || req.query?.modelId);
   const explicitWbsSetId = parsePositiveInt(req.body?.wbsSetId || req.query?.wbsSetId);
+  const viewerSnapshot = Array.isArray(req.body?.viewerSnapshot) ? req.body.viewerSnapshot : null;
   const token = req.cookies?.access_token;
 
   if (!projectId) return next({ status: 400, message: "Project ID is required" });
@@ -730,11 +824,24 @@ const RunWbsModelMatching = async (req, res, next) => {
       return next({ status: 404, message: "Selected WBS set has no rows." });
     }
 
-    const { elements: modelElements, source: modelElementsSource } = await fetchModelElementsForMatching({
+    const {
+      elements: modelElements,
+      source: modelElementsSource,
+      viewerSnapshotStats,
+    } = await fetchModelElementsForMatching({
       token,
       projectId: String(projectId),
       modelId: String(modelId),
+      viewerSnapshot,
     });
+
+    if (viewerSnapshot && !modelElements.length) {
+      return next({
+        status: 400,
+        message: "Viewer snapshot did not contain enough usable leaf elements to run WBS matching.",
+        details: viewerSnapshotStats,
+      });
+    }
 
     if (!modelElements.length) {
       return next({
@@ -789,6 +896,7 @@ const RunWbsModelMatching = async (req, res, next) => {
           externalElementId: extra?.externalElementId || null,
           disciplineId: toText(element.discipline_id),
           categoryId: toText(element.category_id),
+          source: modelElementsSource,
         },
       });
     });
@@ -833,6 +941,7 @@ const RunWbsModelMatching = async (req, res, next) => {
         runId,
         wbsSetId: wbsSet.id,
         modelElementsSource,
+        viewerSnapshotStats,
         totalElements: matchesToInsert.length,
         matchedElements: matched,
         unmatchedElements: unmatched,
