@@ -229,19 +229,19 @@ const mapElementToRow = (element) => {
   )
   const familyName = pickProperty(properties, ["Family Name", "Family"], [["family"]])
   const elementName = pickProperty(properties, ["Element Name", "Name"], [["element", "name"]]) || toText(element?.name)
-  const typeMark = pickProperty(properties, ["Type Mark", "Mark"], [["type", "mark"]])
-  const description = pickProperty(properties, ["Description", "Type Description"], [["description"]])
-  const model = pickProperty(properties, ["Model", "Model Number", "Modelo"], [["model"]])
+  const typeMark = pickProperty(properties, ["Type Mark"], [["type"]])
+  const description = pickProperty(properties, ["Description"], [["description"]])
+  const model = pickProperty(properties, ["Model", "Modelo"], [["model"]])
   const manufacturer = pickProperty(properties, ["Manufacturer", "Fabricante"], [["manufacturer"], ["fabricante"]])
   const assemblyCode = pickProperty(
     properties,
-    ["Assembly Code", "OmniClass Number"],
-    [["assembly", "code"], ["omniclass", "number"]]
+    ["Assembly Code"],
+    [["assembly", "code"]]
   )
   const assemblyDescription = pickProperty(
     properties,
-    ["Assembly Description", "OmniClass Title"],
-    [["assembly", "description"], ["assembly", "desc"], ["omniclass", "title"]]
+    ["Assembly Description"],
+    [["assembly", "description"], ["assembly", "desc"]]
   )
 
   const elementId = toText(element?.id)

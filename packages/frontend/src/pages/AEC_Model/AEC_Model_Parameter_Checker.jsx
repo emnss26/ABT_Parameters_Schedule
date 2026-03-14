@@ -878,21 +878,103 @@ export default function AECModelParameterCheckerPage() {
         </div>
 
         <div className="space-y-6">
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              variant={viewMode === "checker" ? "default" : "outline"}
-              onClick={() => setViewMode("checker")}
-            >
-              Checker
-            </Button>
-            <Button
-              size="sm"
-              variant={viewMode === "project-compliance" ? "default" : "outline"}
-              onClick={() => setViewMode("project-compliance")}
-            >
-              Project Parameter Compliance
-            </Button>
+          <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold text-foreground">Modos de Visualización</h2>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant={viewMode === "checker" ? "default" : "ghost"} onClick={() => setViewMode("checker")}>
+                Revisión
+              </Button>
+              <Button
+                size="sm"
+                variant={viewMode === "project-compliance" ? "default" : "ghost"}
+                onClick={() => setViewMode("project-compliance")}
+              >
+                Cumplimiento
+              </Button>
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+            <div className="mb-3">
+              <h2 className="text-sm font-semibold text-foreground">Controles</h2>
+            </div>
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex flex-wrap items-center gap-2">
+                {isAnalyzingDiscipline ? (
+                  <Badge variant="secondary" className="text-xs">
+                    Progreso: {analysisProgress.completed}/{analysisProgress.total}
+                  </Badge>
+                ) : null}
+                {isLoadingHistory ? (
+                  <Badge variant="secondary" className="text-xs">
+                    Cargando historial desde DB...
+                  </Badge>
+                ) : null}
+                {isResolvingLastDiscipline ? (
+                  <Badge variant="secondary" className="text-xs">
+                    Resolviendo ultima disciplina analizada...
+                  </Badge>
+                ) : null}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button variant="outline" className="gap-2" onClick={openModelDialog}>
+                  <Boxes className="h-4 w-4" />
+                  Seleccionar modelo
+                </Button>
+
+                <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                  <span className="font-medium text-muted-foreground">Disciplina</span>
+                  <select
+                    className="min-w-[220px] bg-transparent text-sm outline-none"
+                    value={selectedDiscipline?.id || ""}
+                    onChange={(event) => setSelectedDisciplineId(event.target.value)}
+                    disabled={isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
+                  >
+                    {PARAMETER_CHECKER_DISCIPLINES.map((discipline) => (
+                      <option key={discipline.id} value={discipline.id}>
+                        {discipline.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <Button
+                  className="gap-2 bg-[rgb(170,32,47)] text-white hover:bg-[rgb(150,28,42)]"
+                  onClick={runDisciplineAnalysis}
+                  disabled={!selectedModelId || isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
+                >
+                  <Play className="h-4 w-4" />
+                  {isAnalyzingDiscipline
+                    ? "Analizando"
+                    : isLoadingHistory || isResolvingLastDiscipline
+                      ? "Cargando"
+                      : "Analizar disciplina"}
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  className="gap-2"
+                  onClick={handleIsolateTableDbIds}
+                  disabled={!selectedUrn || loadingViewer || isResolvingIsolation || !activeCategoryRows.length}
+                >
+                  <Target className="h-4 w-4" />
+                  {isResolvingIsolation ? "Resolviendo dbIds..." : "Aislar dbIds"}
+                </Button>
+
+                <Button
+                  variant="ghost"
+                  className="gap-2"
+                  onClick={handleClearIsolation}
+                  disabled={!selectedUrn || loadingViewer || isResolvingIsolation}
+                >
+                  <Eraser className="h-4 w-4" />
+                  Limpiar aislamiento
+                </Button>
+              </div>
+            </div>
           </div>
 
           {viewMode === "checker" ? (
@@ -909,82 +991,6 @@ export default function AECModelParameterCheckerPage() {
                 <div className="rounded-lg border border-border bg-card px-4 py-3">
                   <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Elementos Completos Globales</p>
                   <p className="text-2xl font-bold text-foreground">{globalKpis.fullyCompliant}</p>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                <div className="flex flex-wrap items-center gap-2">
-                  {isAnalyzingDiscipline ? (
-                    <Badge variant="secondary" className="text-xs">
-                      Progreso: {analysisProgress.completed}/{analysisProgress.total}
-                    </Badge>
-                  ) : null}
-                  {isLoadingHistory ? (
-                    <Badge variant="secondary" className="text-xs">
-                      Cargando historial desde DB...
-                    </Badge>
-                  ) : null}
-                  {isResolvingLastDiscipline ? (
-                    <Badge variant="secondary" className="text-xs">
-                      Resolviendo ultima disciplina analizada...
-                    </Badge>
-                  ) : null}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="outline" className="gap-2" onClick={openModelDialog}>
-                    <Boxes className="h-4 w-4" />
-                    Seleccionar Modelo
-                  </Button>
-
-                  <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
-                    <span className="font-medium text-muted-foreground">Disciplina</span>
-                    <select
-                      className="min-w-[220px] bg-transparent text-sm outline-none"
-                      value={selectedDiscipline?.id || ""}
-                      onChange={(event) => setSelectedDisciplineId(event.target.value)}
-                      disabled={isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
-                    >
-                      {PARAMETER_CHECKER_DISCIPLINES.map((discipline) => (
-                        <option key={discipline.id} value={discipline.id}>
-                          {discipline.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <Button
-                    className="gap-2 bg-[rgb(170,32,47)] text-white hover:bg-[rgb(150,28,42)]"
-                    onClick={runDisciplineAnalysis}
-                    disabled={!selectedModelId || isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
-                  >
-                    <Play className="h-4 w-4" />
-                    {isAnalyzingDiscipline
-                      ? "Analizando"
-                      : isLoadingHistory || isResolvingLastDiscipline
-                        ? "Cargando"
-                        : "Analizar disciplina"}
-                  </Button>
-
-                  <Button
-                    variant="secondary"
-                    className="gap-2"
-                    onClick={handleIsolateTableDbIds}
-                    disabled={!selectedUrn || loadingViewer || isResolvingIsolation || !activeCategoryRows.length}
-                  >
-                    <Target className="h-4 w-4" />
-                    {isResolvingIsolation ? "Resolviendo dbIds..." : "Aislar dbIds"}
-                  </Button>
-
-                  <Button
-                    variant="ghost"
-                    className="gap-2"
-                    onClick={handleClearIsolation}
-                    disabled={!selectedUrn || loadingViewer || isResolvingIsolation}
-                  >
-                    <Eraser className="h-4 w-4" />
-                    Limpiar aislamiento
-                  </Button>
                 </div>
               </div>
 

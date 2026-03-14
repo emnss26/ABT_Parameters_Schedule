@@ -109,7 +109,7 @@ export default function ProjectParameterComplianceTable({
     if (!exportRows.length) return
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
     doc.setFontSize(12)
-    doc.text("Project Parameter Compliance", 40, 30)
+    doc.text("Cumplimiento del Proyecto", 40, 30)
     autoTable(doc, {
       startY: 40,
       styles: { fontSize: 8, cellPadding: 3 },
@@ -123,7 +123,7 @@ export default function ProjectParameterComplianceTable({
   return (
     <div className="rounded-xl border border-border bg-card shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
-        <h2 className="text-sm font-semibold text-foreground">Project Parameter Compliance</h2>
+        <h2 className="text-sm font-semibold text-foreground">Cumplimiento del Proyecto</h2>
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="outline" className="gap-1" onClick={onRefresh} disabled={loading}>
             <RefreshCw className="h-4 w-4" /> {loading ? "Actualizando..." : "Actualizar"}

@@ -17,12 +17,6 @@ const splitWbsCodeParts = (value) => {
 
 const getWbsLevel = (value) => splitWbsCodeParts(value).length;
 
-const getCodeAtLevel = (value, level) => {
-  const parts = splitWbsCodeParts(value);
-  if (!parts.length || parts.length < level) return "";
-  return parts.slice(0, level).join(".");
-};
-
 const compareWbsCodes = (a, b) => {
   const aParts = normalizeWbsCode(a)
     .split(".")
@@ -54,6 +48,25 @@ const formatMoney = (value) => {
   return n.toLocaleString("es-MX", { maximumFractionDigits: 2 });
 };
 
+const getDerivedDurationDays = (startDate, endDate) => {
+  if (!isIsoDate(startDate) || !isIsoDate(endDate)) return "";
+
+  const start = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  const diffMs = end.getTime() - start.getTime();
+  if (!Number.isFinite(diffMs)) return "";
+
+  return String(Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24))));
+};
+
+const getDurationLabel = (row) => {
+  const derived = getDerivedDurationDays(row?.startDate, row?.endDate);
+  if (derived !== "") return `${derived} d`;
+
+  const fallback = toText(row?.duration);
+  return fallback || "-";
+};
+
 const sortWbsRows = (rows = []) =>
   [...rows].sort((left, right) => {
     const byCode = compareWbsCodes(left?.code, right?.code);
@@ -81,7 +94,7 @@ export default function WBSPlannerTable({
     <div className="w-full min-w-0 overflow-hidden rounded-xl border border-border bg-card shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <h2 className="text-sm font-semibold text-foreground">
-          WBS Nivel 1-4 {readOnly ? "(solo lectura)" : "(editable)"}
+          Tabla WBS {readOnly ? "(solo lectura)" : "(editable)"}
         </h2>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -117,27 +130,25 @@ export default function WBSPlannerTable({
             </span>
           ) : (
             <span className="text-muted-foreground">
-              N3 y N4 se autogeneran al agregar un hijo desde su fila padre.
+              Los codigos hijo se autogeneran al agregar una fila desde su padre.
             </span>
           )}
         </div>
       ) : null}
 
       <div className={`${viewportClassName} min-w-0 overflow-auto`}>
-        <Table className="min-w-[1680px] text-xs">
+        <Table className="min-w-[1440px] text-xs">
           <TableHeader>
             <TableRow className="bg-muted/40">
-              <TableHead className="w-[110px]">Nivel 1</TableHead>
-              <TableHead className="w-[120px]">Nivel 2</TableHead>
-              <TableHead className="w-[140px]">Nivel 3</TableHead>
-              <TableHead className="w-[160px]">Nivel 4</TableHead>
+              <TableHead className="w-[90px]">Nivel</TableHead>
+              <TableHead className="w-[160px]">C&oacute;digo</TableHead>
               <TableHead className="min-w-[280px]">Actividad</TableHead>
               <TableHead className="w-[130px]">Inicio Planeado</TableHead>
               <TableHead className="w-[130px]">Fin Planeado</TableHead>
               <TableHead className="w-[130px]">Inicio Real</TableHead>
               <TableHead className="w-[130px]">Fin Real</TableHead>
               <TableHead className="w-[130px]">Costo</TableHead>
-              <TableHead className="w-[120px]">Duracion</TableHead>
+              <TableHead className="w-[120px]">Duraci&oacute;n</TableHead>
               {!readOnly ? <TableHead className="w-[220px] text-right">Acciones</TableHead> : null}
             </TableRow>
           </TableHeader>
@@ -145,8 +156,8 @@ export default function WBSPlannerTable({
           <TableBody>
             {!sortedRows.length ? (
               <TableRow>
-                <TableCell colSpan={readOnly ? 11 : 12} className="h-20 text-center text-muted-foreground">
-                  Carga un archivo Excel con la WBS o agrega filas manualmente.
+                <TableCell colSpan={readOnly ? 9 : 10} className="h-20 text-center text-muted-foreground">
+                  Carga un archivo Excel con la WBS, importa Project WBS o agrega filas manualmente.
                 </TableCell>
               </TableRow>
             ) : (
@@ -156,14 +167,25 @@ export default function WBSPlannerTable({
 
                 return (
                   <TableRow key={row.id}>
-                    <TableCell className="font-mono">{getCodeAtLevel(row.code, 1) || "-"}</TableCell>
-                    <TableCell className="font-mono">{getCodeAtLevel(row.code, 2) || "-"}</TableCell>
-                    <TableCell className="font-mono">{getCodeAtLevel(row.code, 3) || "-"}</TableCell>
-                    <TableCell className="font-mono">{getCodeAtLevel(row.code, 4) || "-"}</TableCell>
+                    <TableCell className="font-mono text-center">{level || "-"}</TableCell>
+
+                    <TableCell className="font-mono">
+                      {readOnly ? (
+                        toText(row.code) || "-"
+                      ) : (
+                        <input
+                          type="text"
+                          value={toText(row.code)}
+                          onChange={(event) => onChangeField(row.id, "code", event.target.value)}
+                          placeholder="Ej: 1.2.3"
+                          className="h-8 w-full rounded border border-input bg-background px-2 text-xs font-mono"
+                        />
+                      )}
+                    </TableCell>
 
                     <TableCell>
                       {readOnly ? (
-                        <div style={{ paddingLeft: `${Math.max(level - 1, 0) * 12}px` }}>{toText(row.title) || "-"}</div>
+                        toText(row.title) || "-"
                       ) : (
                         <input
                           type="text"
@@ -243,17 +265,7 @@ export default function WBSPlannerTable({
                     </TableCell>
 
                     <TableCell>
-                      {readOnly ? (
-                        toText(row.duration) || "-"
-                      ) : (
-                        <input
-                          type="text"
-                          value={toText(row.duration)}
-                          onChange={(event) => onChangeField(row.id, "duration", event.target.value)}
-                          placeholder="Ej: 5d"
-                          className="h-8 w-full rounded border border-input bg-background px-2 text-xs"
-                        />
-                      )}
+                      <span className="text-muted-foreground">{getDurationLabel(row)}</span>
                     </TableCell>
 
                     {!readOnly ? (

@@ -28,7 +28,6 @@ const REQUIRED_FIELDS = [
 ]
 
 const hasValue = (value) => String(value || "").trim() !== ""
-const normalize = (value) => String(value || "").trim().toLowerCase()
 const normalizeKey = (value) =>
   String(value || "")
     .toLowerCase()
@@ -193,7 +192,7 @@ export default function ParameterComplianceTable({
     if (!exportRows.length) return
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
     doc.setFontSize(12)
-    doc.text(`Parameter Checker - ${activeCategory?.name || "Categoria"}`, 40, 30)
+    doc.text(`Revisión de parámetros - ${activeCategory?.name || "Categoria"}`, 40, 30)
     autoTable(doc, {
       startY: 40,
       styles: { fontSize: 7, cellPadding: 3 },
@@ -209,7 +208,7 @@ export default function ParameterComplianceTable({
       <div className="border-b border-border px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-foreground">
-            {discipline?.name || "Parameter Compliance"}
+            {discipline?.name || "Revisión de parámetros"}
           </h3>
           <div className="flex items-center gap-2">
             <Button size="sm" variant="outline" className="gap-1" onClick={handleExportExcel} disabled={!exportRows.length}>

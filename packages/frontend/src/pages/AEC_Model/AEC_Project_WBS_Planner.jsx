@@ -14,12 +14,12 @@ import AbitatLogoLoader from "@/components/general_component/AbitatLogoLoader";
 import SelectModelsModal from "@/components/aec_model_components/SelectModelModal";
 import WBSPlannerTable from "@/components/aec_model_components/WBSPlannerTable";
 import {
-  clearViewerIsolation,
-  isolateViewerDbIds,
-  resolveViewerDbIdsForRows,
-  simpleViewer,
-  teardownSimpleViewer,
-} from "@/utils/viewers/simpleViewer";
+  applyProjectWbs4DSequence,
+  clearProjectWbs4DSequence,
+  initProjectWbs4DViewer,
+  resolveProjectWbs4DViewerDbIdsForRows,
+  teardownProjectWbs4DViewer,
+} from "@/utils/viewers/project-wbs-4d.viewer";
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL;
 const VIEWER_CONTAINER_ID = "WBS4DViewer";
@@ -44,10 +44,69 @@ const getParentWbsCode = (value) => {
   return parts.slice(0, -1).join(".");
 };
 
-const getCodeAtLevel = (value, level) => {
-  const parts = splitWbsCodeParts(value);
-  if (!parts.length || parts.length < level) return "";
-  return parts.slice(0, level).join(".");
+const normalizeHeaderLabel = (value) =>
+  toText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9%]+/g, " ")
+    .trim();
+
+const findColumnIndex = (headers = [], aliases = []) => {
+  const normalizedAliases = aliases.map(normalizeHeaderLabel).filter(Boolean);
+  return headers.findIndex((header) => normalizedAliases.includes(normalizeHeaderLabel(header)));
+};
+
+const findHeaderRowIndex = (matrix = [], predicate = () => false, maxScan = 8) => {
+  const safeMatrix = Array.isArray(matrix) ? matrix : [];
+  const scanLimit = Math.min(maxScan, safeMatrix.length);
+
+  for (let i = 0; i < scanLimit; i += 1) {
+    const row = Array.isArray(safeMatrix[i]) ? safeMatrix[i] : [];
+    if (predicate(row)) return i;
+  }
+
+  return -1;
+};
+
+const WBS_HEADER_ALIASES = {
+  code: ["codigo", "codigo wbs", "code", "wbs", "wbs code"],
+  level: ["nivel", "level", "outline level"],
+  title: ["actividad", "task name", "nombre de tarea", "title", "titulo", "name"],
+  startDate: ["inicio planeado", "start", "planned start", "start date"],
+  endDate: ["fin planeado", "finish", "planned finish", "end date", "finish date"],
+  actualStartDate: ["inicio real", "actual start"],
+  actualEndDate: ["fin real", "actual finish", "actual end"],
+  plannedCost: ["costo", "planned cost", "cost", "total cost"],
+  duration: ["duracion", "duration"],
+  baselineStartDate: ["baseline start", "inicio linea base", "inicio de linea base"],
+  baselineEndDate: ["baseline finish", "baseline end", "fin linea base", "fin de linea base"],
+  actualProgressPct: ["% complete", "% completado", "actual progress", "actual progress pct"],
+};
+
+const PROJECT_WBS_HEADER_ALIASES = {
+  title: ["task name", "nombre de tarea", "actividad", "name", "task"],
+  wbs: ["wbs", "wbs code"],
+  outlineNumber: ["outline number", "outline num", "codigo", "code", "codigo wbs"],
+  level: ["outline level", "nivel", "level"],
+  taskId: ["id", "task id"],
+  uniqueId: ["unique id", "uniqueid"],
+  startDate: ["start", "planned start", "inicio", "inicio planeado"],
+  endDate: ["finish", "planned finish", "finish date", "fin", "fin planeado"],
+  duration: ["duration", "duracion"],
+  baselineStartDate: ["baseline start", "baseline start date", "inicio de linea base"],
+  baselineEndDate: ["baseline finish", "baseline finish date", "fin de linea base"],
+  actualStartDate: ["actual start", "inicio real"],
+  actualEndDate: ["actual finish", "actual end", "fin real"],
+  plannedCost: ["cost", "total cost", "planned cost", "costo"],
+  actualProgressPct: ["% complete", "% completado", "physical % complete", "progress"],
+};
+
+const parsePercentage = (value) => {
+  const normalized = toText(value).replace(/%/g, "").replace(/,/g, ".");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
 };
 
 const toPositiveInt = (value) => {
@@ -156,18 +215,20 @@ const createLocalWbsRow = ({
   duration = "",
 }) => {
   const normalizedCode = normalizeWbsCode(code);
+  const safeStartDate = isIsoDate(startDate) ? startDate : "";
+  const safeEndDate = isIsoDate(endDate) ? endDate : "";
   return {
     id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     code: normalizedCode,
     level: getWbsLevel(normalizedCode),
     title: toText(title),
-    startDate: isIsoDate(startDate) ? startDate : "",
-    endDate: isIsoDate(endDate) ? endDate : "",
+    startDate: safeStartDate,
+    endDate: safeEndDate,
     actualStartDate: isIsoDate(actualStartDate) ? actualStartDate : "",
     actualEndDate: isIsoDate(actualEndDate) ? actualEndDate : "",
     plannedCost: parseMoney(plannedCost),
     actualCost: null,
-    duration: toText(duration),
+    duration: getPlannedDurationValue(safeStartDate, safeEndDate, duration),
   };
 };
 
@@ -179,14 +240,17 @@ const hydrateWbsRows = (rows = []) => {
       const code = normalizeWbsCode(row?.code || row?.wbsCode);
       if (!isValidWbsCode(code)) return null;
 
+      const startDate = parseDateToIso(row?.startDate || row?.start_date);
+      const endDate = parseDateToIso(row?.endDate || row?.end_date);
+
       return {
         id: row?.id ?? `row-${index}-${code}`,
         code,
         level: getWbsLevel(code),
         title: toText(row?.title || row?.name || row?.activity),
-        startDate: parseDateToIso(row?.startDate || row?.start_date),
-        endDate: parseDateToIso(row?.endDate || row?.end_date),
-        duration: toText(row?.duration || row?.durationLabel || row?.duration_label),
+        startDate,
+        endDate,
+        duration: getPlannedDurationValue(startDate, endDate, row?.duration || row?.durationLabel || row?.duration_label),
         baselineStartDate: parseDateToIso(row?.baselineStartDate || row?.baseline_start_date),
         baselineEndDate: parseDateToIso(row?.baselineEndDate || row?.baseline_end_date),
         actualStartDate: parseDateToIso(row?.actualStartDate || row?.actual_start_date),
@@ -232,19 +296,17 @@ const getNextWbsCodeForParent = (rows = [], parentCode = "") => {
   return normalizedParent ? `${normalizedParent}.${nextSuffix}` : String(nextSuffix);
 };
 
-const parseWbsRowsFromMatrix = (matrix = []) => {
+const parseLegacyWbsRowsFromMatrix = (matrix = [], headerRowIndex = -1) => {
   const seen = new Set();
   const rows = [];
   if (!Array.isArray(matrix) || !matrix.length) return rows;
 
-  const header = (Array.isArray(matrix[0]) ? matrix[0] : []).map((cell) => toText(cell).toLowerCase());
-  const isLevelFormat = header.some((cell) => cell.includes("nivel 1")) || header.some((cell) => cell.includes("actividad"));
-
-  const startIndex = isLevelFormat ? 1 : 0;
+  const isLevelFormat = headerRowIndex >= 0;
+  const startIndex = headerRowIndex >= 0 ? headerRowIndex + 1 : 0;
 
   matrix.slice(startIndex).forEach((rawRow, idx) => {
     const row = Array.isArray(rawRow) ? rawRow : [];
-    const code = isLevelFormat ? pickDeepestCodeFromLevels(row) : normalizeWbsCode(row[0]);
+    const code = pickDeepestCodeFromLevels(row) || normalizeWbsCode(row[0]);
     const title = isLevelFormat ? toText(row[4]) : toText(row[1]);
 
     if (!isValidWbsCode(code) || !title || seen.has(code)) return;
@@ -253,21 +315,267 @@ const parseWbsRowsFromMatrix = (matrix = []) => {
     if (!level || level > 4) return;
     seen.add(code);
 
+    const startDate = parseDateToIso(isLevelFormat ? row[5] : row[2]);
+    const endDate = parseDateToIso(isLevelFormat ? row[6] : row[3]);
+
     rows.push({
-      id: `${code}-${idx + startIndex}`,
+      id: `${code}-${idx + startIndex + 1}`,
       code,
       level,
       title,
-      startDate: parseDateToIso(isLevelFormat ? row[5] : row[2]),
-      endDate: parseDateToIso(isLevelFormat ? row[6] : row[3]),
-      actualStartDate: parseDateToIso(isLevelFormat ? row[7] : row[7]),
-      actualEndDate: parseDateToIso(isLevelFormat ? row[8] : row[8]),
-      plannedCost: parseMoney(isLevelFormat ? row[9] : row[9]),
-      duration: toText(isLevelFormat ? row[10] : row[4]),
+      startDate,
+      endDate,
+      actualStartDate: parseDateToIso(row[7]),
+      actualEndDate: parseDateToIso(row[8]),
+      plannedCost: parseMoney(row[9]),
+      duration: getPlannedDurationValue(startDate, endDate, isLevelFormat ? row[10] : row[4]),
     });
   });
 
   return sortWbsRows(rows);
+};
+
+const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
+  if (!Array.isArray(matrix) || !matrix.length) return [];
+
+  const headerRow = Array.isArray(matrix[headerRowIndex]) ? matrix[headerRowIndex] : [];
+  const headers = headerRow.map((cell) => normalizeHeaderLabel(cell));
+  const indexes = {
+    code: findColumnIndex(headers, WBS_HEADER_ALIASES.code),
+    level: findColumnIndex(headers, WBS_HEADER_ALIASES.level),
+    title: findColumnIndex(headers, WBS_HEADER_ALIASES.title),
+    startDate: findColumnIndex(headers, WBS_HEADER_ALIASES.startDate),
+    endDate: findColumnIndex(headers, WBS_HEADER_ALIASES.endDate),
+    actualStartDate: findColumnIndex(headers, WBS_HEADER_ALIASES.actualStartDate),
+    actualEndDate: findColumnIndex(headers, WBS_HEADER_ALIASES.actualEndDate),
+    plannedCost: findColumnIndex(headers, WBS_HEADER_ALIASES.plannedCost),
+    duration: findColumnIndex(headers, WBS_HEADER_ALIASES.duration),
+    baselineStartDate: findColumnIndex(headers, WBS_HEADER_ALIASES.baselineStartDate),
+    baselineEndDate: findColumnIndex(headers, WBS_HEADER_ALIASES.baselineEndDate),
+    actualProgressPct: findColumnIndex(headers, WBS_HEADER_ALIASES.actualProgressPct),
+  };
+
+  if (indexes.code < 0 || indexes.title < 0) return [];
+
+  const seen = new Set();
+  const rows = [];
+
+  matrix.slice(headerRowIndex + 1).forEach((rawRow, idx) => {
+    const row = Array.isArray(rawRow) ? rawRow : [];
+    const code = normalizeWbsCode(row[indexes.code]);
+    const title = toText(row[indexes.title]);
+    const level = toPositiveInt(row[indexes.level]) || getWbsLevel(code);
+
+    if (!isValidWbsCode(code) || !title || !level || level > 4 || seen.has(code)) return;
+    seen.add(code);
+
+    const startDate = parseDateToIso(row[indexes.startDate]);
+    const endDate = parseDateToIso(row[indexes.endDate]);
+
+    rows.push({
+      id: `${code}-${headerRowIndex + idx + 2}`,
+      code,
+      level,
+      title,
+      startDate,
+      endDate,
+      actualStartDate: parseDateToIso(row[indexes.actualStartDate]),
+      actualEndDate: parseDateToIso(row[indexes.actualEndDate]),
+      baselineStartDate: parseDateToIso(row[indexes.baselineStartDate]),
+      baselineEndDate: parseDateToIso(row[indexes.baselineEndDate]),
+      actualProgressPct: parsePercentage(row[indexes.actualProgressPct]),
+      plannedCost: parseMoney(row[indexes.plannedCost]),
+      duration: getPlannedDurationValue(startDate, endDate, row[indexes.duration]),
+    });
+  });
+
+  return sortWbsRows(rows);
+};
+
+const buildSequentialProjectCode = (level, counters) => {
+  if (!level || level < 1 || level > 4) return "";
+
+  if (level === 1) {
+    counters[0] = (counters[0] || 0) + 1;
+    counters.length = 1;
+    return String(counters[0]);
+  }
+
+  for (let i = 0; i < level - 1; i += 1) {
+    if (!Number.isFinite(counters[i]) || counters[i] <= 0) counters[i] = 1;
+  }
+
+  counters[level - 1] = (counters[level - 1] || 0) + 1;
+  counters.length = level;
+  return counters.slice(0, level).join(".");
+};
+
+const syncProjectCountersFromCode = (counters, code) => {
+  const parts = splitWbsCodeParts(code).map((part) => Number(part));
+  if (!parts.length) return;
+  counters.length = parts.length;
+  parts.forEach((part, index) => {
+    counters[index] = Number.isFinite(part) && part > 0 ? part : counters[index] || 1;
+  });
+};
+
+const extractProjectCodeFromRow = (row, indexes, outlineLevel) => {
+  const hierarchicalCandidates = [indexes.wbs, indexes.outlineNumber]
+    .map((index) => (index >= 0 ? normalizeWbsCode(row[index]) : ""))
+    .filter(Boolean);
+
+  const hierarchicalCode = hierarchicalCandidates.find((candidate) => getWbsLevel(candidate) >= 1);
+  if (hierarchicalCode) return hierarchicalCode;
+
+  const genericCode = indexes.outlineNumber >= 0 ? normalizeWbsCode(row[indexes.outlineNumber]) : "";
+  if (genericCode && (!outlineLevel || outlineLevel === 1 || getWbsLevel(genericCode) > 1)) {
+    return genericCode;
+  }
+
+  if (!outlineLevel || outlineLevel === 1) {
+    const numericIdCode = [indexes.taskId, indexes.uniqueId]
+      .map((index) => (index >= 0 ? normalizeWbsCode(row[index]) : ""))
+      .find(Boolean);
+    if (numericIdCode) return numericIdCode;
+  }
+
+  return "";
+};
+
+const parseProjectWbsRowsFromMatrix = (matrix = []) => {
+  if (!Array.isArray(matrix) || !matrix.length) return [];
+
+  const headerRowIndex = findHeaderRowIndex(matrix, (row) => {
+    const headers = (Array.isArray(row) ? row : []).map((cell) => normalizeHeaderLabel(cell));
+    return (
+      findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.title) >= 0 &&
+      (
+        findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.wbs) >= 0 ||
+        findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.outlineNumber) >= 0 ||
+        findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.level) >= 0 ||
+        findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.taskId) >= 0 ||
+        findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.uniqueId) >= 0
+      )
+    );
+  });
+
+  if (headerRowIndex < 0) return [];
+
+  const headerRow = Array.isArray(matrix[headerRowIndex]) ? matrix[headerRowIndex] : [];
+  const headers = headerRow.map((cell) => normalizeHeaderLabel(cell));
+  const indexes = {
+    title: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.title),
+    wbs: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.wbs),
+    outlineNumber: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.outlineNumber),
+    level: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.level),
+    taskId: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.taskId),
+    uniqueId: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.uniqueId),
+    startDate: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.startDate),
+    endDate: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.endDate),
+    duration: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.duration),
+    baselineStartDate: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.baselineStartDate),
+    baselineEndDate: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.baselineEndDate),
+    actualStartDate: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.actualStartDate),
+    actualEndDate: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.actualEndDate),
+    plannedCost: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.plannedCost),
+    actualProgressPct: findColumnIndex(headers, PROJECT_WBS_HEADER_ALIASES.actualProgressPct),
+  };
+
+  if (indexes.title < 0) return [];
+
+  const seen = new Set();
+  const counters = [];
+  const rows = [];
+
+  matrix.slice(headerRowIndex + 1).forEach((rawRow, idx) => {
+    const row = Array.isArray(rawRow) ? rawRow : [];
+    const title = toText(row[indexes.title]);
+    if (!title) return;
+
+    const outlineLevel = indexes.level >= 0 ? toPositiveInt(row[indexes.level]) : null;
+    let code = extractProjectCodeFromRow(row, indexes, outlineLevel);
+    let level = getWbsLevel(code) || outlineLevel || null;
+
+    if (!code) {
+      const generatedLevel = outlineLevel || 1;
+      if (!generatedLevel || generatedLevel > 4) return;
+      code = buildSequentialProjectCode(generatedLevel, counters);
+      level = generatedLevel;
+    } else {
+      level = getWbsLevel(code) || outlineLevel || 0;
+      if (!level || level > 4) return;
+      syncProjectCountersFromCode(counters, code);
+    }
+
+    if (!isValidWbsCode(code) || seen.has(code)) return;
+    seen.add(code);
+
+    const startDate = parseDateToIso(row[indexes.startDate]);
+    const endDate = parseDateToIso(row[indexes.endDate]);
+
+    rows.push({
+      id: `${code}-${headerRowIndex + idx + 2}`,
+      code,
+      level,
+      title,
+      startDate,
+      endDate,
+      actualStartDate: parseDateToIso(row[indexes.actualStartDate]),
+      actualEndDate: parseDateToIso(row[indexes.actualEndDate]),
+      baselineStartDate: parseDateToIso(row[indexes.baselineStartDate]),
+      baselineEndDate: parseDateToIso(row[indexes.baselineEndDate]),
+      actualProgressPct: parsePercentage(row[indexes.actualProgressPct]),
+      plannedCost: parseMoney(row[indexes.plannedCost]),
+      duration: getPlannedDurationValue(startDate, endDate, row[indexes.duration]),
+      extraProps: {
+        source: "project-wbs",
+        taskId: toText(row[indexes.taskId]),
+        uniqueId: toText(row[indexes.uniqueId]),
+        sourceOutlineNumber: toText(row[indexes.outlineNumber]),
+        sourceWbsCode: toText(row[indexes.wbs]),
+      },
+    });
+  });
+
+  return sortWbsRows(rows);
+};
+
+const parseWbsRowsFromMatrix = (matrix = []) => {
+  if (!Array.isArray(matrix) || !matrix.length) return [];
+
+  const headerRowIndex = findHeaderRowIndex(matrix, (row) => {
+    const headers = (Array.isArray(row) ? row : []).map((cell) => normalizeHeaderLabel(cell));
+    const hasLegacyLevels =
+      findColumnIndex(headers, ["nivel 1"]) >= 0 ||
+      findColumnIndex(headers, ["nivel 2"]) >= 0 ||
+      findColumnIndex(headers, ["nivel 3"]) >= 0 ||
+      findColumnIndex(headers, ["nivel 4"]) >= 0;
+
+    return (
+      hasLegacyLevels ||
+      (
+        findColumnIndex(headers, WBS_HEADER_ALIASES.code) >= 0 &&
+        findColumnIndex(headers, WBS_HEADER_ALIASES.title) >= 0
+      )
+    );
+  });
+
+  if (headerRowIndex >= 0) {
+    const headerRow = Array.isArray(matrix[headerRowIndex]) ? matrix[headerRowIndex] : [];
+    const headers = headerRow.map((cell) => normalizeHeaderLabel(cell));
+    const hasLegacyLevels =
+      findColumnIndex(headers, ["nivel 1"]) >= 0 ||
+      findColumnIndex(headers, ["nivel 2"]) >= 0 ||
+      findColumnIndex(headers, ["nivel 3"]) >= 0 ||
+      findColumnIndex(headers, ["nivel 4"]) >= 0;
+
+    if (hasLegacyLevels) return parseLegacyWbsRowsFromMatrix(matrix, headerRowIndex);
+
+    const structuredRows = parseStructuredWbsRowsFromMatrix(matrix, headerRowIndex);
+    if (structuredRows.length) return structuredRows;
+  }
+
+  return parseLegacyWbsRowsFromMatrix(matrix);
 };
 
 const addDaysIso = (iso, days) => {
@@ -283,6 +591,16 @@ const diffDaysIso = (fromIso, toIso) => {
   const to = new Date(`${toIso}T00:00:00Z`);
   const ms = to.getTime() - from.getTime();
   return Number.isFinite(ms) ? Math.max(0, Math.floor(ms / (1000 * 60 * 60 * 24))) : 0;
+};
+
+const getDerivedPlannedDurationDays = (startIso, endIso) => {
+  if (!isIsoDate(startIso) || !isIsoDate(endIso)) return "";
+  return String(diffDaysIso(startIso, endIso));
+};
+
+const getPlannedDurationValue = (startIso, endIso, fallback = "") => {
+  const derived = getDerivedPlannedDurationDays(startIso, endIso);
+  return derived || toText(fallback);
 };
 
 const countInvalidWbsRows = (rows = []) => {
@@ -481,7 +799,8 @@ export default function AECProjectWBSPlannerPage() {
   const [playing, setPlaying] = useState(false);
 
   const fileInputRef = useRef(null);
-  const resolvedDbIdsRef = useRef({});
+  const projectFileInputRef = useRef(null);
+  const [resolvedViewerDbIds, setResolvedViewerDbIds] = useState({});
   const requestDedupRef = useRef(new Map());
 
   const apiBase = (backendUrl || "").replace(/\/$/, "");
@@ -528,12 +847,33 @@ export default function AECProjectWBSPlannerPage() {
     return diffDaysIso(timelineMin, timelineDate);
   }, [timelineMin, timelineDate]);
 
+  const datedMatchedRows = useMemo(
+    () =>
+      (matchRun?.rows || []).filter(
+        (r) => r.matchStatus === "matched" && isIsoDate(r.startDate) && isIsoDate(r.endDate)
+      ),
+    [matchRun]
+  );
+
+  const viewerSequenceItems = useMemo(
+    () =>
+      datedMatchedRows
+        .map((row) => ({
+          rowId: row.id,
+          dbId: toPositiveInt(row.viewerDbId) || toPositiveInt(resolvedViewerDbIds[row.id]),
+          startDate: row.startDate,
+          endDate: row.endDate,
+        }))
+        .filter((item) => item.dbId),
+    [datedMatchedRows, resolvedViewerDbIds]
+  );
+
   const activeRows = useMemo(() => {
     if (!timelineDate) return [];
-    return (matchRun?.rows || []).filter(
-      (r) => r.matchStatus === "matched" && r.startDate && r.endDate && r.startDate <= timelineDate && timelineDate <= r.endDate
+    return viewerSequenceItems.filter(
+      (item) => item.startDate <= timelineDate && timelineDate <= item.endDate
     );
-  }, [matchRun, timelineDate]);
+  }, [viewerSequenceItems, timelineDate]);
 
   const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const sCurveData = useMemo(() => buildSCurveData(wbsLevel4Rows), [wbsLevel4Rows]);
@@ -606,7 +946,8 @@ export default function AECProjectWBSPlannerPage() {
   );
 
   const persistWbs = useCallback(
-    async (rows, fileName) => {
+    async (rows, options = {}) => {
+      const { sourceFileName = "", name = "WBS Import" } = options;
       setSavingWbs(true);
       try {
         const res = await fetch(`${apiBase}/aec/${pId}/wbs/save`, {
@@ -615,7 +956,8 @@ export default function AECProjectWBSPlannerPage() {
           credentials: "include",
           body: JSON.stringify({
             modelId: selectedModelId || null,
-            sourceFileName: fileName,
+            name,
+            sourceFileName,
             rows,
             activateForModel: Boolean(selectedModelId),
           }),
@@ -655,11 +997,14 @@ export default function AECProjectWBSPlannerPage() {
           actualStartDate: isIsoDate(row.actualStartDate) ? row.actualStartDate : null,
           actualEndDate: isIsoDate(row.actualEndDate) ? row.actualEndDate : null,
           plannedCost: parseMoney(row.plannedCost),
-          duration: toText(row.duration),
+          duration: getDerivedPlannedDurationDays(row.startDate, row.endDate),
         };
       });
 
-      await persistWbs(rowsToPersist, sourceFileName || "WBS_Manual");
+      await persistWbs(rowsToPersist, {
+        sourceFileName: sourceFileName || "WBS_Manual",
+        name: "WBS Manual",
+      });
       await loadPlannerState(selectedModelId);
       toast.success(`WBS guardada (${rowsToPersist.length} filas)`);
     } catch (err) {
@@ -702,20 +1047,91 @@ export default function AECProjectWBSPlannerPage() {
     }
   };
 
+  const importSpreadsheetRows = useCallback(
+    async ({
+      file,
+      parser,
+      emptyMessage,
+      successMessage,
+      importName,
+    }) => {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const sheet = workbook.Sheets[workbook.SheetNames?.[0]];
+      if (!sheet) throw new Error("Archivo sin hojas");
+
+      const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      const parsedRows = parser(matrix);
+      if (!parsedRows.length) throw new Error(emptyMessage);
+
+      setWbsRows(parsedRows);
+      setSourceFileName(file.name);
+      await persistWbs(parsedRows, {
+        sourceFileName: file.name,
+        name: importName,
+      });
+      await loadPlannerState(selectedModelId);
+      toast.success(successMessage(parsedRows.length));
+    },
+    [loadPlannerState, persistWbs, selectedModelId]
+  );
+
+  const handleWbsSpreadsheetSelected = useCallback(
+    async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      try {
+        await importSpreadsheetRows({
+          file,
+          parser: parseWbsRowsFromMatrix,
+          emptyMessage: "No se detectaron filas WBS validas hasta nivel 4",
+          importName: "WBS Import",
+          successMessage: (count) => `WBS guardada (${count} filas)`,
+        });
+      } catch (err) {
+        toast.error(err?.message || "No se pudo cargar/guardar WBS");
+      } finally {
+        event.target.value = "";
+      }
+    },
+    [importSpreadsheetRows]
+  );
+
+  const handleProjectWbsSpreadsheetSelected = useCallback(
+    async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      try {
+        await importSpreadsheetRows({
+          file,
+          parser: parseProjectWbsRowsFromMatrix,
+          emptyMessage:
+            "No se detectaron filas Project WBS validas. Se requiere Task Name y una columna WBS, Outline Number, Outline Level o ID.",
+          importName: "Project WBS Import",
+          successMessage: (count) => `Project WBS cargada (${count} filas)`,
+        });
+      } catch (err) {
+        toast.error(err?.message || "No se pudo cargar/guardar Project WBS");
+      } finally {
+        event.target.value = "";
+      }
+    },
+    [importSpreadsheetRows]
+  );
+
   const buildWbsExportRows = useCallback(
     (rows = []) =>
       (Array.isArray(rows) ? rows : []).map((row) => ({
-        "Nivel 1": getCodeAtLevel(row.code, 1) || "",
-        "Nivel 2": getCodeAtLevel(row.code, 2) || "",
-        "Nivel 3": getCodeAtLevel(row.code, 3) || "",
-        "Nivel 4": getCodeAtLevel(row.code, 4) || "",
+        Código: normalizeWbsCode(row.code),
+        Nivel: getWbsLevel(row.code) || Number(row.level) || "",
         Actividad: toText(row.title),
         "Inicio Planeado": isIsoDate(row.startDate) ? row.startDate : "",
         "Fin Planeado": isIsoDate(row.endDate) ? row.endDate : "",
         "Inicio Real": isIsoDate(row.actualStartDate) ? row.actualStartDate : "",
         "Fin Real": isIsoDate(row.actualEndDate) ? row.actualEndDate : "",
         Costo: parseMoney(row.plannedCost) ?? "",
-        Duracion: toText(row.duration),
+        Duración: toText(row.duration),
       })),
     []
   );
@@ -766,9 +1182,10 @@ export default function AECProjectWBSPlannerPage() {
     autoTable(doc, {
       startY: 40,
       styles: { fontSize: 8, cellPadding: 3 },
-      head: [["WBS", "Actividad", "Inicio Planeado", "Fin Planeado", "Inicio Real", "Fin Real", "Costo"]],
+      head: [["Código", "Nivel", "Actividad", "Inicio Planeado", "Fin Planeado", "Inicio Real", "Fin Real", "Costo"]],
       body: ganttRows.map((row) => [
         row.code || "",
+        getWbsLevel(row.code) || row.level || "",
         row.title || "",
         row.startDate || "",
         row.endDate || "",
@@ -786,7 +1203,28 @@ export default function AECProjectWBSPlannerPage() {
       prev.map((row) => {
         if (String(row.id) !== String(rowId)) return row;
 
-        if (field === "startDate" || field === "endDate" || field === "actualStartDate" || field === "actualEndDate") {
+        if (field === "code") {
+          const normalizedCode = normalizeWbsCode(value);
+          return {
+            ...row,
+            code: normalizedCode,
+            level: getWbsLevel(normalizedCode),
+          };
+        }
+
+        if (field === "startDate" || field === "endDate") {
+          const nextValue = isIsoDate(value) ? value : "";
+          const nextStartDate = field === "startDate" ? nextValue : row.startDate;
+          const nextEndDate = field === "endDate" ? nextValue : row.endDate;
+
+          return {
+            ...row,
+            [field]: nextValue,
+            duration: getDerivedPlannedDurationDays(nextStartDate, nextEndDate),
+          };
+        }
+
+        if (field === "actualStartDate" || field === "actualEndDate") {
           return { ...row, [field]: isIsoDate(value) ? value : "" };
         }
 
@@ -903,7 +1341,7 @@ export default function AECProjectWBSPlannerPage() {
     if (viewMode !== "viewer" || !selectedUrn) return;
     let cancelled = false;
     setLoadingViewer(true);
-    simpleViewer(selectedUrn, VIEWER_CONTAINER_ID)
+    initProjectWbs4DViewer(selectedUrn, VIEWER_CONTAINER_ID)
       .catch((error) => {
         if (!cancelled) {
           toast.error(error?.message || "No se pudo inicializar el viewer.");
@@ -915,11 +1353,11 @@ export default function AECProjectWBSPlannerPage() {
 
     return () => {
       cancelled = true;
-      teardownSimpleViewer();
+      teardownProjectWbs4DViewer();
     };
   }, [viewMode, selectedUrn]);
 
-  useEffect(() => () => teardownSimpleViewer(), []);
+  useEffect(() => () => teardownProjectWbs4DViewer(), []);
 
   useEffect(() => {
     if (!timelineMin || !timelineMax) {
@@ -932,7 +1370,10 @@ export default function AECProjectWBSPlannerPage() {
   }, [timelineMin, timelineMax]);
 
   useEffect(() => {
-    if (viewMode !== "viewer" || !selectedUrn || loadingViewer || !matchRun?.rows?.length) return;
+    if (viewMode !== "viewer" || !selectedUrn || loadingViewer || !matchRun?.rows?.length) {
+      setResolvedViewerDbIds({});
+      return;
+    }
     let cancelled = false;
 
     const rows = matchRun.rows.map((r) => ({
@@ -942,7 +1383,7 @@ export default function AECProjectWBSPlannerPage() {
       externalElementId: r.externalElementId,
     }));
 
-    resolveViewerDbIdsForRows(rows)
+    resolveProjectWbs4DViewerDbIdsForRows(rows)
       .then((resolution) => {
         if (cancelled) return;
         const map = {};
@@ -950,10 +1391,11 @@ export default function AECProjectWBSPlannerPage() {
           const id = toPositiveInt(resolution?.resolvedByRowIndex?.[index]);
           if (id) map[row.id] = id;
         });
-        resolvedDbIdsRef.current = map;
+        setResolvedViewerDbIds(map);
       })
       .catch(() => {
-        resolvedDbIdsRef.current = {};
+        if (cancelled) return;
+        setResolvedViewerDbIds({});
       });
 
     return () => {
@@ -962,39 +1404,30 @@ export default function AECProjectWBSPlannerPage() {
   }, [viewMode, selectedUrn, loadingViewer, matchRun]);
 
   useEffect(() => {
-    if (viewMode !== "viewer" || !selectedUrn) return;
-    if (!activeRows.length) {
-      try {
-        clearViewerIsolation();
-      } catch {
-        return;
-      }
+    if (viewMode !== "viewer" || !selectedUrn || loadingViewer) return;
+    if (!timelineDate || !viewerSequenceItems.length) {
+      clearProjectWbs4DSequence();
       return;
     }
 
-    const dbIds = Array.from(
-      new Set(
-        activeRows
-          .map((r) => toPositiveInt(r.viewerDbId) || toPositiveInt(resolvedDbIdsRef.current[r.id]))
-          .filter(Boolean)
-      )
-    );
+    let cancelled = false;
 
-    if (!dbIds.length) {
-      try {
-        clearViewerIsolation();
-      } catch {
-        return;
-      }
-      return;
-    }
+    applyProjectWbs4DSequence({
+      currentDate: timelineDate,
+      items: viewerSequenceItems,
+    }).catch(() => {
+      if (cancelled) return;
+    });
 
-    try {
-      isolateViewerDbIds(dbIds, { fitToView: false, select: false });
-    } catch {
-      return;
-    }
-  }, [activeRows, viewMode, selectedUrn]);
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, selectedUrn, loadingViewer, timelineDate, viewerSequenceItems]);
+
+  useEffect(() => {
+    if (viewMode === "viewer") return;
+    clearProjectWbs4DSequence();
+  }, [viewMode]);
 
   useEffect(() => {
     if (!playing || !timelineMin || !timelineMax) return undefined;
@@ -1029,30 +1462,36 @@ export default function AECProjectWBSPlannerPage() {
           type="file"
           className="hidden"
           accept=".xlsx,.xls"
-          onChange={async (event) => {
-            const file = event.target.files?.[0];
-            if (!file) return;
-
-            try {
-              const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
-              const sheet = wb.Sheets[wb.SheetNames?.[0]];
-              if (!sheet) throw new Error("Archivo sin hojas");
-
-              const parsed = parseWbsRowsFromMatrix(XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" }));
-              if (!parsed.length) throw new Error("No se detectaron filas WBS validas hasta nivel 4");
-
-              setWbsRows(parsed);
-              setSourceFileName(file.name);
-              await persistWbs(parsed, file.name);
-              await loadPlannerState(selectedModelId);
-              toast.success(`WBS guardada (${parsed.length} filas)`);
-            } catch (err) {
-              toast.error(err?.message || "No se pudo cargar/guardar WBS");
-            } finally {
-              event.target.value = "";
-            }
-          }}
+          onChange={handleWbsSpreadsheetSelected}
         />
+
+        <input
+          ref={projectFileInputRef}
+          type="file"
+          className="hidden"
+          accept=".xlsx,.xls"
+          onChange={handleProjectWbsSpreadsheetSelected}
+        />
+
+        <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+          <div className="mb-3">
+            <h2 className="text-sm font-semibold text-foreground">Modos de Visualización</h2>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} onClick={() => setViewMode("table")}>
+              Tabla WBS
+            </Button>
+            <Button size="sm" variant={viewMode === "viewer" ? "default" : "ghost"} onClick={() => setViewMode("viewer")}>
+              <MonitorPlay className="mr-1 h-4 w-4" /> Viewer + Tabla
+            </Button>
+            <Button size="sm" variant={viewMode === "dashboard" ? "default" : "ghost"} onClick={() => setViewMode("dashboard")}>
+              <Presentation className="mr-1 h-4 w-4" /> Dashboard
+            </Button>
+            <Button size="sm" variant={viewMode === "gantt" ? "default" : "ghost"} onClick={() => setViewMode("gantt")}>
+              <FileText className="mr-1 h-4 w-4" /> Gant
+            </Button>
+          </div>
+        </div>
 
         <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
           <div className="mb-3">
@@ -1066,6 +1505,15 @@ export default function AECProjectWBSPlannerPage() {
               onClick={() => fileInputRef.current?.click()}
             >
               <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar Excel WBS"}
+            </Button>
+
+            <Button
+              variant="outline"
+              className="gap-2"
+              disabled={savingWbs || loadingWbs}
+              onClick={() => projectFileInputRef.current?.click()}
+            >
+              <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar Project WBS"}
             </Button>
 
             <Button variant="outline" className="gap-2" onClick={openModelDialog}>
@@ -1082,31 +1530,12 @@ export default function AECProjectWBSPlannerPage() {
             </Button>
 
             {loadingWbs ? <Badge variant="secondary">Cargando WBS...</Badge> : null}
+            {sourceFileName ? <Badge variant="outline">Fuente: {sourceFileName}</Badge> : null}
             {matchRun?.run ? (
               <Badge variant="secondary">
                 Match {matchRun.run.matchedElements}/{matchRun.run.totalElements}
               </Badge>
             ) : null}
-          </div>
-        </div>
-
-        <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-          <div className="mb-3">
-            <h2 className="text-sm font-semibold text-foreground">Modos de Visualizacion</h2>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} onClick={() => setViewMode("table")}>
-              Tabla WBS
-            </Button>
-            <Button size="sm" variant={viewMode === "viewer" ? "default" : "ghost"} onClick={() => setViewMode("viewer")}>
-              <MonitorPlay className="mr-1 h-4 w-4" /> Viewer + Tabla
-            </Button>
-            <Button size="sm" variant={viewMode === "dashboard" ? "default" : "ghost"} onClick={() => setViewMode("dashboard")}>
-              <Presentation className="mr-1 h-4 w-4" /> Dashboard
-            </Button>
-            <Button size="sm" variant={viewMode === "gantt" ? "default" : "ghost"} onClick={() => setViewMode("gantt")}>
-              <FileText className="mr-1 h-4 w-4" /> Gant
-            </Button>
           </div>
         </div>
 
