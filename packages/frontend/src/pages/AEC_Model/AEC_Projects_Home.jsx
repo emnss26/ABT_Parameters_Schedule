@@ -5,6 +5,7 @@ import { FolderOpen } from "lucide-react";
 
 import AppLayout from "@/components/general_component/AppLayout";
 import AbitatLogoLoader from "@/components/general_component/AbitatLogoLoader";
+import { saveProjectSessionContext } from "@/utils/projectSession";
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL;
 
@@ -42,14 +43,17 @@ export default function AECProjectsPage() {
 
         const result = await response.json();
 
-        if (!result.success && result.error) {
-          throw new Error(result.error);
+        if (!response.ok || !result?.success) {
+          throw new Error(result?.message || result?.error || "No se pudo obtener la lista de proyectos.");
+        }
+
+        if (!Array.isArray(result?.data?.aecProjects)) {
+          throw new Error("La respuesta de proyectos no tiene el formato esperado.");
         }
 
         setProjects(result.data?.aecProjects || []);
         setError("");
-      } catch (err) {
-        console.error(err);
+      } catch {
         setError("No se pudieron cargar los proyectos. Revisa tu conexion.");
       } finally {
         setLoading(false);
@@ -60,11 +64,11 @@ export default function AECProjectsPage() {
   }, [navigate, shouldSkipDevDuplicateFetch]);
 
   const openProject = (project, target) => {
-    sessionStorage.setItem(
-      "altProjectId",
-      project.alternativeIdentifiers?.dataManagementAPIProjectId
-    );
-    sessionStorage.setItem("projectName", project.name);
+    saveProjectSessionContext({
+      projectId: project.id,
+      projectName: project.name,
+      altProjectId: project.alternativeIdentifiers?.dataManagementAPIProjectId,
+    });
     navigate(`/${target}/${project.id}`);
   };
 
@@ -80,7 +84,7 @@ export default function AECProjectsPage() {
         </div>
 
         <div className="flex w-full flex-col items-center justify-center">
-          <h2 className="mb-6 text-2xl font-bold tracking-tight text-gray-800">Lista de Proyectos</h2>
+          <h2 className="mb-6 text-2xl font-bold tracking-tight text-gray-800">Lista de proyectos</h2>
 
           <div className="relative flex min-h-[400px] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-1 shadow-xl">
             {loading ? (
@@ -123,13 +127,13 @@ export default function AECProjectsPage() {
                             className="whitespace-nowrap rounded-lg bg-[rgb(170,32,47)] px-3 py-2 text-[11px] font-semibold text-white shadow-sm transition-all duration-300 hover:bg-[rgb(150,28,42)] hover:shadow-md active:scale-95"
                             onClick={() => openProject(project, "parameter-checker")}
                           >
-                            Parameter Checker
+                            Revision de parametros
                           </button>
                           <button
                             className="whitespace-nowrap rounded-lg border border-[rgb(170,32,47)] px-3 py-2 text-[11px] font-semibold text-[rgb(170,32,47)] shadow-sm transition-all duration-300 hover:bg-[rgb(170,32,47)] hover:text-white hover:shadow-md active:scale-95"
                             onClick={() => openProject(project, "wbs-planner")}
                           >
-                            WBS Planner
+                            Planeador WBS
                           </button>
                         </div>
                       </li>

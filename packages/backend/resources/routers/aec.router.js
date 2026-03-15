@@ -7,6 +7,7 @@ const { GetAECProjectFolders } = require("../controllers/aec_controllers/aec.pro
 const {
   GetAECModelParametersByCategory,
   SaveParameterCheck,
+  DeleteParameterCheck,
   GetLastParameterCheck,
   GetLastDisciplineByModel,
   GetProjectParameterCompliance,
@@ -32,6 +33,7 @@ router.get("/:projectId/graphql-project-folders", GetAECProjectFolders);
 
 router.get("/:projectId/graphql-model-parameters", GetAECModelParametersByCategory);
 router.post("/:projectId/parameters/save-check", SaveParameterCheck);
+router.delete("/:projectId/parameters/check/:checkId", DeleteParameterCheck);
 router.get("/:projectId/parameters/last-check", GetLastParameterCheck);
 router.get("/:projectId/parameters/last-discipline", GetLastDisciplineByModel);
 router.get("/:projectId/parameters/project-compliance", GetProjectParameterCompliance);

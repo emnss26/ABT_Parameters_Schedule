@@ -3,6 +3,7 @@ const axios = require("axios");
 const APS_CLIENT_ID = process.env.APS_CLIENT_ID;
 const APS_CLIENT_SECRET = process.env.APS_CLIENT_SECRET;
 const APS_CALLBACK_URL = process.env.APS_CALLBACK_URL;
+const DEFAULT_APS_TOKEN_SCOPE = "data:read data:create data:write";
 
 function validateApsConfig() {
   if (!APS_CLIENT_ID || !APS_CLIENT_SECRET || !APS_CALLBACK_URL) {
@@ -59,13 +60,14 @@ async function GetAPSThreeLeggedToken(code) {
  * Retrieves a two-legged (client credentials) APS token.
  * @returns {Promise<string>} Access token.
  */
-async function GetAPSToken() {
+async function GetAPSToken(options = {}) {
   validateApsConfig();
+  const scope = String(options?.scope || DEFAULT_APS_TOKEN_SCOPE || "").trim();
 
   try {
     const body = new URLSearchParams({
       grant_type: "client_credentials",
-      scope: "data:read data:create data:write",
+      scope,
     });
 
     const { data } = await axios.post(
@@ -112,9 +114,29 @@ async function getACCProjectUser(accessToken, projectId, userId) {
 
     return response.data;
   } catch (error) {
+    const status = Number(error?.response?.status) || 500;
     const details = error?.response?.data || error?.message;
     console.error("getACCProjectUser failed:", details);
-    throw new Error("Failed to retrieve user access levels from ACC");
+    const wrappedError = new Error(
+      status === 404
+        ? "Project or user not found in ACC"
+        : status === 403
+          ? "Not authorized to access this project"
+          : status === 401
+            ? "Invalid or expired Autodesk session"
+            : "Failed to retrieve user access levels from ACC"
+    );
+    wrappedError.status = status;
+    wrappedError.code =
+      status === 404
+        ? "ACCProjectUserNotFound"
+        : status === 403
+          ? "ACCProjectUserForbidden"
+          : status === 401
+            ? "ACCProjectUserUnauthorized"
+            : "ACCProjectUserFetchFailed";
+    wrappedError.details = details;
+    throw wrappedError;
   }
 }
 

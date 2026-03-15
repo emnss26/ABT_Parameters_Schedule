@@ -1,11 +1,15 @@
-const axios = require("axios")
-
 const {
   GetAPSThreeLeggedToken,
   GetAPSToken,
 } = require("../../../utils/auth_utils/auth.utils")
+const {
+  REFRESH_SESSION_COOKIE_NAME,
+  getRemainingRefreshSessionMs,
+  issueRefreshSession,
+} = require("../../../utils/auth_utils/refresh.session.utils")
 
 const frontendUrl = process.env.FRONTEND_URL
+const VIEWER_FRONTEND_TOKEN_SCOPE = "viewables:read data:read"
 
 const buildCookieOptions = () => {
   const isProduction = process.env.NODE_ENV === "production"
@@ -17,6 +21,9 @@ const buildCookieOptions = () => {
     path: "/",
   }
 }
+
+const buildAccessTokenMaxAge = (remainingRefreshSessionMs) =>
+  Math.min(60 * 60 * 1000, Math.max(Number(remainingRefreshSessionMs) || 0, 0))
 
 const GetThreeLegged = async (req, res, next) => {
   const { code } = req.query
@@ -39,15 +46,24 @@ const GetThreeLegged = async (req, res, next) => {
     }
 
     const cookieOptions = buildCookieOptions()
+    const refreshSession = issueRefreshSession()
+    const refreshSessionMaxAge = getRemainingRefreshSessionMs(refreshSession.payload)
 
     res.cookie("access_token", token.access_token, {
       ...cookieOptions,
-      maxAge: 60 * 60 * 1000, // 1h
+      maxAge: buildAccessTokenMaxAge(refreshSessionMaxAge),
     })
 
-    res.cookie("refresh_token", token.refresh_token, cookieOptions)
-
-    // console.log("Three-legged token set in cookies.")
+    if (token.refresh_token) {
+      res.cookie("refresh_token", token.refresh_token, {
+        ...cookieOptions,
+        maxAge: refreshSessionMaxAge,
+      })
+    }
+    res.cookie(REFRESH_SESSION_COOKIE_NAME, refreshSession.token, {
+      ...cookieOptions,
+      maxAge: refreshSessionMaxAge,
+    })
 
     return res.redirect(`${frontendUrl}/aec-projects`)
   } catch (err) {
@@ -58,7 +74,7 @@ const GetThreeLegged = async (req, res, next) => {
 
 const GetToken = async (req, res, next) => {
   try {
-    const token = await GetAPSToken()
+    const token = await GetAPSToken({ scope: VIEWER_FRONTEND_TOKEN_SCOPE })
 
     if (!token) {
       const err = new Error("Failed to retrieve APS token")
@@ -66,6 +82,8 @@ const GetToken = async (req, res, next) => {
       err.code = "TokenRetrievalFailed"
       return next(err)
     }
+
+    res.set("Cache-Control", "no-store")
 
     return res.status(200).json({
       success: true,
@@ -87,6 +105,7 @@ const PostLogout = async (req, res, next) => {
     // in dev it clears Lax/non-secure cookies as well.
     res.clearCookie("access_token", cookieOptions)
     res.clearCookie("refresh_token", cookieOptions)
+    res.clearCookie(REFRESH_SESSION_COOKIE_NAME, cookieOptions)
 
     return res.status(200).json({
       success: true,

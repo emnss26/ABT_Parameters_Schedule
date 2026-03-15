@@ -7,6 +7,7 @@ import { Boxes, Eraser, Play, Target } from "lucide-react"
 
 import AppLayout from "@/components/general_component/AppLayout"
 import AbitatLogoLoader from "@/components/general_component/AbitatLogoLoader"
+import BlockingPageLoader from "@/components/general_component/BlockingPageLoader"
 import SelectModelsModal from "@/components/aec_model_components/SelectModelModal"
 import ParameterComplianceTable from "@/components/aec_model_components/ParameterComplianceTable"
 import ProjectParameterComplianceTable from "@/components/aec_model_components/ProjectParameterComplianceTable"
@@ -22,6 +23,7 @@ import {
   simpleViewer,
   teardownSimpleViewer,
 } from "@/utils/viewers/simpleViewer"
+import { getProjectNameFromSession } from "@/utils/projectSession"
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL
 const VIEWER_CONTAINER_ID = "TADSimpleViewer"
@@ -60,6 +62,7 @@ const compactRowsForPersistence = (rows = []) =>
     assemblyDescription: row?.assemblyDescription || "",
     count: row?.count || 1,
     compliance: row?.compliance || null,
+    rawProperties: Array.isArray(row?.rawProperties) ? row.rawProperties : [],
   }))
 
 export default function AECModelParameterCheckerPage() {
@@ -71,6 +74,7 @@ export default function AECModelParameterCheckerPage() {
   const requestDedupRef = useRef(new Map())
 
   const selectionStorageKey = `parameter_checker_selected_model_${projectId || "unknown"}`
+  const projectName = useMemo(() => getProjectNameFromSession(projectId), [projectId])
 
   const [models, setModels] = useState([])
   const [loadingModels, setLoadingModels] = useState(false)
@@ -88,6 +92,7 @@ export default function AECModelParameterCheckerPage() {
   const [analysisProgress, setAnalysisProgress] = useState({ completed: 0, total: 0 })
   const [isResolvingIsolation, setIsResolvingIsolation] = useState(false)
   const [isResolvingLastDiscipline, setIsResolvingLastDiscipline] = useState(false)
+  const [deletingCheckId, setDeletingCheckId] = useState(null)
   const [viewMode, setViewMode] = useState("checker")
   const [projectComplianceSummary, setProjectComplianceSummary] = useState({ rows: [], grandTotal: null })
   const [loadingProjectCompliance, setLoadingProjectCompliance] = useState(false)
@@ -96,12 +101,14 @@ export default function AECModelParameterCheckerPage() {
 
   const apiBase = (backendUrl || "").replace(/\/$/, "")
   const pId = encodeURIComponent(projectId || "")
+  const isComplianceView = viewMode === "project-compliance"
+  const controlsDisabledByViewMode = isComplianceView
 
   const safeJson = async (res) => {
     const contentType = res.headers.get("content-type") || ""
     if (!contentType.includes("application/json")) {
       const raw = await res.text()
-      throw new Error(raw.slice(0, 300) || "Invalid non-JSON response")
+      throw new Error(raw.slice(0, 300) || "Respuesta no valida del servidor")
     }
     return res.json()
   }
@@ -206,7 +213,7 @@ export default function AECModelParameterCheckerPage() {
       })
       const json = await safeJson(res)
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "Failed to fetch models")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la lista de modelos")
       }
 
       setModels(json.data?.models || [])
@@ -225,7 +232,7 @@ export default function AECModelParameterCheckerPage() {
       const res = await fetch(endpoint, { credentials: "include" })
       const json = await safeJson(res)
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "Failed to fetch parameter compliance")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la revision de parametros")
       }
 
       const rows = Array.isArray(json?.data?.rows) ? json.data.rows : []
@@ -253,7 +260,7 @@ export default function AECModelParameterCheckerPage() {
       const json = await safeJson(res)
 
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "Failed to fetch latest saved check")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la ultima revision guardada")
       }
 
       if (!json.found) return null
@@ -284,7 +291,7 @@ export default function AECModelParameterCheckerPage() {
       const json = await safeJson(res)
 
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "Failed to fetch latest checked discipline")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la ultima disciplina revisada")
       }
 
       return json
@@ -302,7 +309,7 @@ export default function AECModelParameterCheckerPage() {
       const json = await safeJson(res)
 
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "Failed to fetch project parameter compliance")
+        throw new Error(json?.message || json?.error || "No se pudo cargar el cumplimiento del proyecto")
       }
 
       setProjectComplianceSummary({
@@ -334,7 +341,25 @@ export default function AECModelParameterCheckerPage() {
 
       const json = await safeJson(res)
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "Failed to save parameter check")
+        throw new Error(json?.message || json?.error || "No se pudo guardar la revision de parametros")
+      }
+
+      return json?.data || null
+    },
+    [apiBase, pId]
+  )
+
+  const deleteParameterCheck = useCallback(
+    async ({ checkId }) => {
+      const endpoint = `${apiBase}/aec/${pId}/parameters/check/${encodeURIComponent(checkId)}`
+      const res = await fetch(endpoint, {
+        method: "DELETE",
+        credentials: "include",
+      })
+
+      const json = await safeJson(res)
+      if (!res.ok || !json.success) {
+        throw new Error(json?.message || json?.error || "No se pudo eliminar la revision de parametros")
       }
 
       return json?.data || null
@@ -365,6 +390,7 @@ export default function AECModelParameterCheckerPage() {
             error: "",
             rows: [],
             summary: null,
+            checkData: null,
             categoryId: category.id,
             categoryName: category.name,
             categoryQuery: category.query,
@@ -419,6 +445,7 @@ export default function AECModelParameterCheckerPage() {
                 error: "",
                 rows: persisted.rows,
                 summary: persisted.summary,
+                checkData: persisted.checkData || null,
               }
             } catch (err) {
               return {
@@ -433,6 +460,7 @@ export default function AECModelParameterCheckerPage() {
                   averageCompliancePct: 0,
                   fullyCompliant: 0,
                 },
+                checkData: null,
               }
             }
           })
@@ -451,6 +479,7 @@ export default function AECModelParameterCheckerPage() {
               error: entry.error,
               rows: entry.rows,
               summary: entry.summary,
+              checkData: entry.checkData || null,
               categoryId: entry.categoryId,
               categoryName: entry.categoryName,
               categoryQuery: entry.categoryQuery,
@@ -518,6 +547,7 @@ export default function AECModelParameterCheckerPage() {
           error: "",
           rows: [],
           summary: null,
+          checkData: null,
           categoryId: category.id,
           categoryName: category.name,
           categoryQuery: category.query,
@@ -554,6 +584,29 @@ export default function AECModelParameterCheckerPage() {
 
           if (analysisRunRef.current !== runId) return
 
+          let savedCheckData = null
+          try {
+            const saved = await saveCategoryCheck({
+              modelId: selectedModelId,
+              disciplineId: discipline.id,
+              categoryId: category.id,
+              rows: data.rows,
+            })
+            savedCheckData = saved?.checkId
+              ? {
+                  id: saved.checkId,
+                  disciplineId: discipline.id,
+                  categoryId: category.id,
+                  modelId: selectedModelId,
+                }
+              : null
+          } catch (saveErr) {
+            persistenceErrors.push({
+              categoryName: category.name,
+              message: saveErr?.message || "No se pudo guardar en DB.",
+            })
+          }
+
           setAnalysisByDiscipline((prev) => {
             const previousDiscipline = prev[discipline.id] || {}
             const previousCategories = previousDiscipline.categories || {}
@@ -573,6 +626,7 @@ export default function AECModelParameterCheckerPage() {
                     error: "",
                     rows: data.rows,
                     summary: data.summary,
+                    checkData: savedCheckData,
                     categoryId: category.id,
                     categoryName: category.name,
                     categoryQuery: category.query,
@@ -582,20 +636,6 @@ export default function AECModelParameterCheckerPage() {
               },
             }
           })
-
-          try {
-            await saveCategoryCheck({
-              modelId: selectedModelId,
-              disciplineId: discipline.id,
-              categoryId: category.id,
-              rows: data.rows,
-            })
-          } catch (saveErr) {
-            persistenceErrors.push({
-              categoryName: category.name,
-              message: saveErr?.message || "No se pudo guardar en DB.",
-            })
-          }
 
           categoryDraft.push({
             categoryId: category.id,
@@ -633,6 +673,7 @@ export default function AECModelParameterCheckerPage() {
                       averageCompliancePct: 0,
                       fullyCompliant: 0,
                     },
+                    checkData: null,
                     categoryId: category.id,
                     categoryName: category.name,
                     categoryQuery: category.query,
@@ -685,6 +726,34 @@ export default function AECModelParameterCheckerPage() {
     saveCategoryCheck,
     fetchProjectComplianceSummary,
   ])
+
+  const handleDeleteActiveCheck = useCallback(
+    async (activeResult) => {
+      const checkId = Number(activeResult?.checkData?.id) || null
+      if (!checkId || !selectedModelId || !selectedDiscipline) return
+
+      const categoryName = activeResult?.categoryName || "esta categoria"
+      const confirmed =
+        typeof window === "undefined"
+          ? true
+          : window.confirm(`Se eliminara el check guardado de ${categoryName}. Esta accion no se puede deshacer.`)
+
+      if (!confirmed) return
+
+      setDeletingCheckId(checkId)
+      try {
+        await deleteParameterCheck({ checkId })
+        await hydrateDisciplineFromDb({ modelId: selectedModelId, discipline: selectedDiscipline })
+        await fetchProjectComplianceSummary()
+        toast.success("Revision eliminada correctamente.")
+      } catch (err) {
+        toast.error(err?.message || "No se pudo eliminar la revision.")
+      } finally {
+        setDeletingCheckId(null)
+      }
+    },
+    [deleteParameterCheck, fetchProjectComplianceSummary, hydrateDisciplineFromDb, selectedDiscipline, selectedModelId]
+  )
 
   const openModelDialog = async () => {
     setIsModelDialogOpen(true)
@@ -869,11 +938,12 @@ export default function AECModelParameterCheckerPage() {
         <div className="border-b border-border pb-6">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold tracking-tight text-foreground">Model Parameter Checker</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">Revision de parametros del modelo</h1>
               <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary">
                 V.01
               </Badge>
             </div>
+            <p className="mt-2 text-sm text-muted-foreground">Proyecto: {projectName || "No disponible"}</p>
           </div>
         </div>
 
@@ -900,7 +970,7 @@ export default function AECModelParameterCheckerPage() {
             <div className="mb-3">
               <h2 className="text-sm font-semibold text-foreground">Controles</h2>
             </div>
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-col gap-3 xl:flex-row xl:flex-wrap xl:items-center xl:justify-start">
               <div className="flex flex-wrap items-center gap-2">
                 {isAnalyzingDiscipline ? (
                   <Badge variant="secondary" className="text-xs">
@@ -917,21 +987,40 @@ export default function AECModelParameterCheckerPage() {
                     Resolviendo ultima disciplina analizada...
                   </Badge>
                 ) : null}
+                {controlsDisabledByViewMode ? (
+                  <Badge variant="outline" className="text-xs">
+                    Los controles solo estan disponibles en Revision
+                  </Badge>
+                ) : null}
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" className="gap-2" onClick={openModelDialog}>
+              <div className={`flex flex-wrap items-center gap-2 ${controlsDisabledByViewMode ? "opacity-60" : ""}`}>
+                <Button
+                  variant="outline"
+                  className="gap-2"
+                  onClick={openModelDialog}
+                  disabled={controlsDisabledByViewMode}
+                >
                   <Boxes className="h-4 w-4" />
                   Seleccionar modelo
                 </Button>
 
-                <label className="flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                <label
+                  className={`flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs ${
+                    controlsDisabledByViewMode ? "cursor-not-allowed opacity-70" : ""
+                  }`}
+                >
                   <span className="font-medium text-muted-foreground">Disciplina</span>
                   <select
                     className="min-w-[220px] bg-transparent text-sm outline-none"
                     value={selectedDiscipline?.id || ""}
                     onChange={(event) => setSelectedDisciplineId(event.target.value)}
-                    disabled={isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
+                    disabled={
+                      controlsDisabledByViewMode ||
+                      isAnalyzingDiscipline ||
+                      isLoadingHistory ||
+                      isResolvingLastDiscipline
+                    }
                   >
                     {PARAMETER_CHECKER_DISCIPLINES.map((discipline) => (
                       <option key={discipline.id} value={discipline.id}>
@@ -944,7 +1033,13 @@ export default function AECModelParameterCheckerPage() {
                 <Button
                   className="gap-2 bg-[rgb(170,32,47)] text-white hover:bg-[rgb(150,28,42)]"
                   onClick={runDisciplineAnalysis}
-                  disabled={!selectedModelId || isAnalyzingDiscipline || isLoadingHistory || isResolvingLastDiscipline}
+                  disabled={
+                    controlsDisabledByViewMode ||
+                    !selectedModelId ||
+                    isAnalyzingDiscipline ||
+                    isLoadingHistory ||
+                    isResolvingLastDiscipline
+                  }
                 >
                   <Play className="h-4 w-4" />
                   {isAnalyzingDiscipline
@@ -958,7 +1053,13 @@ export default function AECModelParameterCheckerPage() {
                   variant="secondary"
                   className="gap-2"
                   onClick={handleIsolateTableDbIds}
-                  disabled={!selectedUrn || loadingViewer || isResolvingIsolation || !activeCategoryRows.length}
+                  disabled={
+                    controlsDisabledByViewMode ||
+                    !selectedUrn ||
+                    loadingViewer ||
+                    isResolvingIsolation ||
+                    !activeCategoryRows.length
+                  }
                 >
                   <Target className="h-4 w-4" />
                   {isResolvingIsolation ? "Resolviendo dbIds..." : "Aislar dbIds"}
@@ -968,7 +1069,7 @@ export default function AECModelParameterCheckerPage() {
                   variant="ghost"
                   className="gap-2"
                   onClick={handleClearIsolation}
-                  disabled={!selectedUrn || loadingViewer || isResolvingIsolation}
+                  disabled={controlsDisabledByViewMode || !selectedUrn || loadingViewer || isResolvingIsolation}
                 >
                   <Eraser className="h-4 w-4" />
                   Limpiar aislamiento
@@ -985,7 +1086,7 @@ export default function AECModelParameterCheckerPage() {
                   <p className="text-2xl font-bold text-foreground">{globalKpis.totalElements}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-card px-4 py-3">
-                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Compliance Global Ponderado</p>
+                  <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Cumplimiento global ponderado</p>
                   <p className="text-2xl font-bold text-foreground">{globalKpis.avgCompliance}%</p>
                 </div>
                 <div className="rounded-lg border border-border bg-card px-4 py-3">
@@ -998,7 +1099,7 @@ export default function AECModelParameterCheckerPage() {
                 <div className="min-w-0 self-start flex h-[600px] max-h-[600px] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-sm">
                   <div className="flex items-center justify-between border-b border-border px-4 py-3">
                     <div>
-                      <h2 className="text-sm font-semibold text-foreground">Viewer</h2>
+                      <h2 className="text-sm font-semibold text-foreground">Visor</h2>
                       <p className="text-xs text-muted-foreground">
                         {selectedModel?.name || "Selecciona un modelo para visualizar"}
                       </p>
@@ -1026,6 +1127,8 @@ export default function AECModelParameterCheckerPage() {
                     categoryResults={disciplineResults}
                     activeCategoryId={effectiveActiveCategoryId}
                     onActiveCategoryChange={setActiveCategoryId}
+                    onDeleteCheck={handleDeleteActiveCheck}
+                    deletingCheckId={deletingCheckId}
                   />
                 </div>
               </div>
@@ -1039,7 +1142,7 @@ export default function AECModelParameterCheckerPage() {
               resolveDisciplineName={resolveDisciplineName}
               onRefresh={() => {
                 fetchProjectComplianceSummary().catch((err) => {
-                  toast.error(err?.message || "No se pudo actualizar el resumen de compliance.")
+                  toast.error(err?.message || "No se pudo actualizar el resumen de cumplimiento.")
                 })
               }}
             />
@@ -1069,6 +1172,7 @@ export default function AECModelParameterCheckerPage() {
           }
         }}
       />
+      <BlockingPageLoader visible={isAnalyzingDiscipline} label="Analizando disciplina..." />
     </AppLayout>
   )
 }

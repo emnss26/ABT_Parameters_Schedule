@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Download, FileText } from "lucide-react"
+import { Download, FileText, Trash2 } from "lucide-react"
 
 const REQUIRED_FIELDS = [
   { key: "revitElementId", aliases: ["Revit Element ID", "Element Id", "ElementId", "Id"] },
@@ -134,19 +134,19 @@ const mapRowToExport = (row = {}) => {
   const compliance = getCompliancePct(row)
 
   return {
-    "dbId (raw)": safeText(dbId),
+    "dbId (crudo)": safeText(dbId),
     "Revit Element ID": safeText(revitElementId),
-    Category: safeText(category),
-    "Family Name": safeText(familyName),
-    "Element Name": safeText(elementName),
-    "Type Mark": safeText(typeMark),
-    Description: safeText(description),
-    Model: safeText(model),
-    Manufacturer: safeText(manufacturer),
-    "Assembly Code": safeText(assemblyCode),
-    "Assembly Description": safeText(assemblyDescription),
-    Count: safeText(row.count),
-    "Compliance %": compliance,
+    Categoria: safeText(category),
+    Familia: safeText(familyName),
+    "Nombre del elemento": safeText(elementName),
+    "Marca de tipo": safeText(typeMark),
+    Descripcion: safeText(description),
+    Modelo: safeText(model),
+    Fabricante: safeText(manufacturer),
+    "Codigo de ensamblaje": safeText(assemblyCode),
+    "Descripcion de ensamblaje": safeText(assemblyDescription),
+    Cantidad: safeText(row.count),
+    "Cumplimiento %": compliance,
   }
 }
 
@@ -155,6 +155,8 @@ export default function ParameterComplianceTable({
   categoryResults = {},
   activeCategoryId = "",
   onActiveCategoryChange = () => {},
+  onDeleteCheck = () => {},
+  deletingCheckId = null,
 }) {
   const categories = Array.isArray(discipline?.categories) ? discipline.categories : []
   const firstCategoryId = categories[0]?.id || ""
@@ -171,6 +173,8 @@ export default function ParameterComplianceTable({
   )
   const activeStatus = activeResult?.status || "idle"
   const activeError = activeResult?.error || ""
+  const activeCheckId = Number(activeResult?.checkData?.id) || null
+  const deletingActiveCheck = activeCheckId && Number(deletingCheckId) === Number(activeCheckId)
 
   const metrics = useMemo(
     () => getMetricSummary(activeRows, activeResult?.summary || null),
@@ -183,16 +187,16 @@ export default function ParameterComplianceTable({
     if (!exportRows.length) return
     const wb = XLSX.utils.book_new()
     const sheet = XLSX.utils.json_to_sheet(exportRows)
-    XLSX.utils.book_append_sheet(wb, sheet, "Compliance")
+    XLSX.utils.book_append_sheet(wb, sheet, "Cumplimiento")
     const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
-    XLSX.writeFile(wb, `Parameter_Check_${effectiveCategoryId || "Category"}_${stamp}.xlsx`)
+    XLSX.writeFile(wb, `Revision_Parametros_${effectiveCategoryId || "Categoria"}_${stamp}.xlsx`)
   }
 
   const handleExportPdf = () => {
     if (!exportRows.length) return
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
     doc.setFontSize(12)
-    doc.text(`Revisión de parámetros - ${activeCategory?.name || "Categoria"}`, 40, 30)
+    doc.text(`Revision de parametros - ${activeCategory?.name || "Categoria"}`, 40, 30)
     autoTable(doc, {
       startY: 40,
       styles: { fontSize: 7, cellPadding: 3 },
@@ -200,7 +204,7 @@ export default function ParameterComplianceTable({
       body: exportRows.map((row) => Object.values(row)),
     })
     const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
-    doc.save(`Parameter_Check_${effectiveCategoryId || "Category"}_${stamp}.pdf`)
+    doc.save(`Revision_Parametros_${effectiveCategoryId || "Categoria"}_${stamp}.pdf`)
   }
 
   return (
@@ -208,9 +212,18 @@ export default function ParameterComplianceTable({
       <div className="border-b border-border px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-foreground">
-            {discipline?.name || "Revisión de parámetros"}
+            {discipline?.name || "Revision de parametros"}
           </h3>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              className="gap-1 text-red-600 hover:text-red-700"
+              onClick={() => onDeleteCheck(activeResult)}
+              disabled={!activeCheckId || deletingActiveCheck}
+            >
+              <Trash2 className="h-4 w-4" /> {deletingActiveCheck ? "Eliminando..." : "Eliminar revision"}
+            </Button>
             <Button size="sm" variant="outline" className="gap-1" onClick={handleExportExcel} disabled={!exportRows.length}>
               <Download className="h-4 w-4" /> Excel
             </Button>
@@ -256,7 +269,7 @@ export default function ParameterComplianceTable({
           <p className="text-xl font-bold text-foreground">{metrics.totalElements}</p>
         </div>
         <div className="rounded-lg border border-border bg-background px-3 py-2">
-          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Nivel de compliance</p>
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Nivel de cumplimiento</p>
           <p className="text-xl font-bold text-foreground">{metrics.averageCompliancePct}%</p>
         </div>
         <div className="rounded-lg border border-border bg-background px-3 py-2">
@@ -271,19 +284,19 @@ export default function ParameterComplianceTable({
         <Table className="min-w-[1750px] text-xs">
           <TableHeader>
             <TableRow className="bg-muted/40">
-              <TableHead className="w-[120px]">dbId (raw)</TableHead>
+              <TableHead className="w-[120px]">dbId (crudo)</TableHead>
               <TableHead className="w-[130px]">Revit Element ID</TableHead>
-              <TableHead className="min-w-[120px]">Category</TableHead>
-              <TableHead className="min-w-[140px]">Family Name</TableHead>
-              <TableHead className="min-w-[180px]">Element Name</TableHead>
-              <TableHead className="min-w-[130px]">Type Mark</TableHead>
-              <TableHead className="min-w-[180px]">Description</TableHead>
-              <TableHead className="min-w-[130px]">Model</TableHead>
-              <TableHead className="min-w-[130px]">Manufacturer</TableHead>
-              <TableHead className="min-w-[130px]">Assembly Code</TableHead>
-              <TableHead className="min-w-[170px]">Assembly Description</TableHead>
-              <TableHead className="w-[80px] text-center">Count</TableHead>
-              <TableHead className="w-[120px] text-center">Compliance</TableHead>
+              <TableHead className="min-w-[120px]">Categoria</TableHead>
+              <TableHead className="min-w-[140px]">Familia</TableHead>
+              <TableHead className="min-w-[180px]">Nombre del elemento</TableHead>
+              <TableHead className="min-w-[130px]">Marca de tipo</TableHead>
+              <TableHead className="min-w-[180px]">Descripcion</TableHead>
+              <TableHead className="min-w-[130px]">Modelo</TableHead>
+              <TableHead className="min-w-[130px]">Fabricante</TableHead>
+              <TableHead className="min-w-[130px]">Codigo de ensamblaje</TableHead>
+              <TableHead className="min-w-[170px]">Descripcion de ensamblaje</TableHead>
+              <TableHead className="w-[80px] text-center">Cantidad</TableHead>
+              <TableHead className="w-[120px] text-center">Cumplimiento</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

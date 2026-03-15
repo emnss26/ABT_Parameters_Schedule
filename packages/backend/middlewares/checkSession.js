@@ -1,11 +1,37 @@
-const jwt = require("jsonwebtoken")
 const axios = require("axios")
 const config = require("../config")
 const { verifyAPSToken } = require("../utils/auth_utils/jwt.utils")
+const {
+  REFRESH_SESSION_COOKIE_NAME,
+  getRemainingRefreshSessionMs,
+  verifyRefreshSession,
+} = require("../utils/auth_utils/refresh.session.utils")
+
+const buildCookieOptions = () => {
+  const isProduction = process.env.NODE_ENV === "production"
+
+  return {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: isProduction ? "None" : "Lax",
+    path: "/",
+  }
+}
+
+const buildAccessTokenMaxAge = (remainingRefreshSessionMs) =>
+  Math.min(60 * 60 * 1000, Math.max(Number(remainingRefreshSessionMs) || 0, 0))
+
+const clearSessionCookies = (res, cookieOptions) => {
+  res.clearCookie("access_token", cookieOptions)
+  res.clearCookie("refresh_token", cookieOptions)
+  res.clearCookie(REFRESH_SESSION_COOKIE_NAME, cookieOptions)
+}
 
 async function checkSession(req, res, next) {
   const accessToken = req.cookies?.access_token
   const refreshToken = req.cookies?.refresh_token
+  const refreshSessionToken = req.cookies?.[REFRESH_SESSION_COOKIE_NAME]
+  const cookieOptions = buildCookieOptions()
 
   if (!accessToken && !refreshToken) {
     return res.status(401).json({ message: "No active session. Please log in." })
@@ -28,13 +54,22 @@ async function checkSession(req, res, next) {
         }
       } catch (tokenError) {
         // Access token is invalid or expired; continue with refresh flow.
-        // console.log("Access token invalid:", tokenError.message)
       }
     }
 
     // Access token missing/expired: attempt refresh using refresh token.
     if (refreshToken) {
-      // console.log("Session: Token expired or missing. Attempting refresh...")
+      if (!refreshSessionToken) {
+        clearSessionCookies(res, cookieOptions)
+        return res.status(401).json({ message: "Session expired. Please log in again." })
+      }
+
+      const refreshSession = verifyRefreshSession(refreshSessionToken)
+      const remainingRefreshSessionMs = getRemainingRefreshSessionMs(refreshSession)
+      if (remainingRefreshSessionMs <= 0) {
+        clearSessionCookies(res, cookieOptions)
+        return res.status(401).json({ message: "Session expired. Please log in again." })
+      }
 
       const params = new URLSearchParams()
       params.append("client_id", config.aps.clientId)
@@ -50,23 +85,25 @@ async function checkSession(req, res, next) {
 
       const { access_token: newAccessToken, refresh_token: newRefreshToken } = response.data
 
-      const isProduction = process.env.NODE_ENV === "production"
-      const cookieOptions = {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? "None" : "Lax",
-        path: "/",
-      }
+      res.cookie("access_token", newAccessToken, {
+        ...cookieOptions,
+        maxAge: buildAccessTokenMaxAge(remainingRefreshSessionMs),
+      })
 
-      res.cookie("access_token", newAccessToken, { ...cookieOptions, maxAge: 3600000 })
-
-      if (newRefreshToken) {
-        res.cookie("refresh_token", newRefreshToken, cookieOptions)
-      }
+      const effectiveRefreshToken = newRefreshToken || refreshToken
+      res.cookie("refresh_token", effectiveRefreshToken, {
+        ...cookieOptions,
+        maxAge: remainingRefreshSessionMs,
+      })
+      res.cookie(REFRESH_SESSION_COOKIE_NAME, refreshSessionToken, {
+        ...cookieOptions,
+        maxAge: remainingRefreshSessionMs,
+      })
 
       // Ensure downstream handlers use the fresh tokens within this same request.
       req.cookies.access_token = newAccessToken
-      if (newRefreshToken) req.cookies.refresh_token = newRefreshToken
+      req.cookies.refresh_token = effectiveRefreshToken
+      req.cookies[REFRESH_SESSION_COOKIE_NAME] = refreshSessionToken
 
       req.user = await verifyAPSToken(newAccessToken)
       return next()
@@ -76,8 +113,7 @@ async function checkSession(req, res, next) {
   } catch (err) {
     console.error("Session Refresh Failed:", err.response?.data || err.message)
 
-    res.clearCookie("access_token")
-    res.clearCookie("refresh_token")
+    clearSessionCookies(res, cookieOptions)
 
     return res.status(401).json({ message: "Invalid session. Please log in." })
   }

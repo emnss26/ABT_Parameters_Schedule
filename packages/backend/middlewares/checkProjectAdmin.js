@@ -51,19 +51,22 @@ async function checkProjectAdmin(req, res, next) {
     next();
   } catch (error) {
     console.error("checkProjectAdmin error:", error.message);
+    const status = Number(error?.status || error?.response?.status) || 500;
 
-    // Distinguish between different error types
-    if (error.response?.status === 404) {
-      return res.status(404).json({ message: "Project or user not found in ACC" });
+    if (status === 401) {
+      return res.status(401).json({ message: error.message || "Invalid Autodesk session" });
     }
 
-    if (error.response?.status === 403) {
-      return res.status(403).json({ message: "Not authorized to access this project" });
+    if (status === 404) {
+      return res.status(404).json({ message: error.message || "Project or user not found in ACC" });
+    }
+
+    if (status === 403) {
+      return res.status(403).json({ message: error.message || "Not authorized to access this project" });
     }
 
     return res.status(500).json({
       message: "Failed to verify project admin access",
-      error: error.message,
     });
   }
 }

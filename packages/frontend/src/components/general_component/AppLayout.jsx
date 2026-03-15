@@ -50,13 +50,13 @@ export default function AppLayout({ children, noPadding = false }) {
       ...NAVIGATION,
       {
         id: "parameter-checker",
-        label: "Parameter Checker",
+        label: "Revision de parametros",
         icon: Blocks,
         href: `/parameter-checker/${activeProjectId}`,
       },
       {
         id: "wbs-planner",
-        label: "WBS Planner",
+        label: "Planeador WBS",
         icon: ListTree,
         href: `/wbs-planner/${activeProjectId}`,
       },
@@ -236,7 +236,7 @@ export default function AppLayout({ children, noPadding = false }) {
                   onClick={handleLogout}
                   className="cursor-pointer text-red-600 focus:bg-red-50 focus:text-red-600"
                 >
-                  <LogOut className="mr-2 h-4 w-4" /> Cerrar Sesion
+                  <LogOut className="mr-2 h-4 w-4" /> Cerrar sesion
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

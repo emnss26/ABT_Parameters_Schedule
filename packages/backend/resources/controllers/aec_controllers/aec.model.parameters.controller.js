@@ -289,6 +289,17 @@ const refreshDisciplineRollup = async ({ db, projectId, modelId, disciplineId })
     disciplineId,
   });
 
+  if (!latestCheckIds.length) {
+    await db("parameter_project_compliance_rollups")
+      .where({
+        project_id: String(projectId),
+        model_id: String(modelId),
+        discipline_id: String(disciplineId),
+      })
+      .del();
+    return;
+  }
+
   const latestCheckId =
     latestCheckIds.length > 0 ? latestCheckIds.reduce((max, id) => (id > max ? id : max), 0) : null;
 
@@ -381,6 +392,9 @@ const buildProjectComplianceRowsFromChecks = async ({ projectId }) => {
 
     const summary = buildStoredElementsSummary(elements);
     const latestCheckId = latestCheckIds.reduce((max, id) => (id > max ? id : max), 0);
+    const latestCheck = await knex("parameter_checks")
+      .where({ id: latestCheckId })
+      .first(["created_at"]);
 
     rows.push({
       model_id: modelId,
@@ -389,7 +403,7 @@ const buildProjectComplianceRowsFromChecks = async ({ projectId }) => {
       fully_compliant: summary.fullyCompliant,
       average_compliance_pct: summary.averageCompliancePct,
       latest_check_id: latestCheckId,
-      updated_at: null,
+      updated_at: latestCheck?.created_at || null,
       model_name: modelNameById.get(modelId) || "",
     });
   }
@@ -504,6 +518,69 @@ const SaveParameterCheck = async (req, res, next) => {
   }
 };
 
+const DeleteParameterCheck = async (req, res, next) => {
+  const { projectId, checkId } = req.params;
+  const normalizedCheckId = Number(checkId);
+
+  if (!projectId) return next({ status: 400, message: "Project ID is required" });
+  if (!Number.isSafeInteger(normalizedCheckId) || normalizedCheckId <= 0) {
+    return next({ status: 400, message: "Valid check ID is required" });
+  }
+
+  const trx = await knex.transaction();
+
+  try {
+    const checkRow = await trx("parameter_checks")
+      .where({
+        id: normalizedCheckId,
+        project_id: String(projectId),
+      })
+      .first(["id", "project_id", "model_id", "discipline_id", "category_id"]);
+
+    if (!checkRow) {
+      await trx.rollback();
+      return next({ status: 404, message: "Parameter check not found for this project" });
+    }
+
+    const deletedElements = await trx("parameter_elements").where({ check_id: normalizedCheckId }).del();
+    await trx("parameter_checks").where({ id: normalizedCheckId }).del();
+
+    try {
+      await refreshDisciplineRollup({
+        db: trx,
+        projectId: String(projectId),
+        modelId: String(checkRow.model_id),
+        disciplineId: String(checkRow.discipline_id),
+      });
+      await upsertProjectGrandTotal({ db: trx, projectId: String(projectId) });
+    } catch (rollupErr) {
+      if (!isMissingTableError(rollupErr)) throw rollupErr;
+    }
+
+    await trx.commit();
+
+    return res.status(200).json({
+      success: true,
+      message: "Parameter check deleted",
+      data: {
+        checkId: normalizedCheckId,
+        deletedElements,
+        modelId: String(checkRow.model_id),
+        disciplineId: String(checkRow.discipline_id),
+        categoryId: String(checkRow.category_id),
+      },
+    });
+  } catch (err) {
+    try {
+      await trx.rollback();
+    } catch (_rollbackErr) {
+      // Ignore rollback errors here; the original failure is more relevant.
+    }
+    err.code = err.code || "DeleteParameterCheckFailed";
+    return next(err);
+  }
+};
+
 const GetLastParameterCheck = async (req, res, next) => {
   const { projectId } = req.params;
   const modelId = toText(req.query?.modelId);
@@ -603,6 +680,7 @@ const GetProjectParameterCompliance = async (req, res, next) => {
       await rebuildProjectRollupsIfMissing({ projectId: String(projectId) });
 
       rows = await knex("parameter_project_compliance_rollups as r")
+        .leftJoin("parameter_checks as pc", "pc.id", "r.latest_check_id")
         .leftJoin("model_selection as ms", function () {
           this.on("ms.project_id", "=", "r.project_id").andOn("ms.model_id", "=", "r.model_id");
         })
@@ -615,6 +693,7 @@ const GetProjectParameterCompliance = async (req, res, next) => {
           "r.average_compliance_pct",
           "r.latest_check_id",
           "r.updated_at",
+          "pc.created_at as latest_check_created_at",
           "ms.model_name",
         ])
         .orderBy([{ column: "r.model_id", order: "asc" }, { column: "r.discipline_id", order: "asc" }]);
@@ -629,6 +708,15 @@ const GetProjectParameterCompliance = async (req, res, next) => {
           "analyzed_disciplines",
           "updated_at",
         ]);
+
+      const latestProjectCheck = await knex("parameter_checks")
+        .where({ project_id: String(projectId) })
+        .max({ latest_check_at: "created_at" })
+        .first();
+
+      if (grandTotal) {
+        grandTotal.latest_check_at = latestProjectCheck?.latest_check_at || null;
+      }
     } catch (err) {
       if (!isMissingTableError(err)) throw err;
       rows = await buildProjectComplianceRowsFromChecks({ projectId: String(projectId) });
@@ -658,7 +746,7 @@ const GetProjectParameterCompliance = async (req, res, next) => {
           fullyCompliant: Number(row.fully_compliant) || 0,
           averageCompliancePct: Number(row.average_compliance_pct) || 0,
           latestCheckId: Number(row.latest_check_id) || null,
-          lastCheckAt: row.updated_at,
+          lastCheckAt: row.latest_check_created_at || row.updated_at || null,
         })),
         grandTotal: {
           totalElements: Number(grandTotal.total_elements) || 0,
@@ -666,7 +754,7 @@ const GetProjectParameterCompliance = async (req, res, next) => {
           averageCompliancePct: Number(grandTotal.average_compliance_pct) || 0,
           analyzedModels: Number(grandTotal.analyzed_models) || 0,
           analyzedDisciplines: Number(grandTotal.analyzed_disciplines) || 0,
-          updatedAt: grandTotal.updated_at || null,
+          updatedAt: grandTotal.latest_check_at || grandTotal.updated_at || null,
         },
       },
     });
@@ -679,6 +767,7 @@ const GetProjectParameterCompliance = async (req, res, next) => {
 module.exports = {
   GetAECModelParametersByCategory,
   SaveParameterCheck,
+  DeleteParameterCheck,
   GetLastParameterCheck,
   GetLastDisciplineByModel,
   GetProjectParameterCompliance,

@@ -11,6 +11,7 @@ import { Boxes, Download, FileText, Link2, MonitorPlay, Pause, Play, Presentatio
 
 import AppLayout from "@/components/general_component/AppLayout";
 import AbitatLogoLoader from "@/components/general_component/AbitatLogoLoader";
+import BlockingPageLoader from "@/components/general_component/BlockingPageLoader";
 import SelectModelsModal from "@/components/aec_model_components/SelectModelModal";
 import WBSPlannerTable from "@/components/aec_model_components/WBSPlannerTable";
 import {
@@ -22,10 +23,10 @@ import {
   resolveProjectWbs4DViewerDbIdsForRows,
   teardownProjectWbs4DViewer,
 } from "@/utils/viewers/project-wbs-4d.viewer";
+import { getProjectNameFromSession } from "@/utils/projectSession";
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL;
 const VIEWER_CONTAINER_ID = "WBS4DViewer";
-const MATCH_SNAPSHOT_VIEWER_CONTAINER_ID = "WBS4DViewerMatchSnapshot";
 const PLAY_INTERVAL_MS = 650;
 
 const hasViewerVersionUrn = (urn) => String(urn || "").includes("urn:adsk.wipprod:fs.file:vf.");
@@ -58,7 +59,17 @@ const normalizeHeaderLabel = (value) =>
 
 const findColumnIndex = (headers = [], aliases = []) => {
   const normalizedAliases = aliases.map(normalizeHeaderLabel).filter(Boolean);
-  return headers.findIndex((header) => normalizedAliases.includes(normalizeHeaderLabel(header)));
+  return headers.findIndex((header) => {
+    const normalizedHeader = normalizeHeaderLabel(header);
+    const compactHeader = normalizedHeader.replace(/\s+/g, "");
+
+    return normalizedAliases.some((alias) => {
+      const compactAlias = alias.replace(/\s+/g, "");
+      if (normalizedHeader === alias || compactHeader === compactAlias) return true;
+      if (alias.length < 6) return false;
+      return normalizedHeader.includes(alias) || alias.includes(normalizedHeader);
+    });
+  });
 };
 
 const findHeaderRowIndex = (matrix = [], predicate = () => false, maxScan = 8) => {
@@ -77,10 +88,30 @@ const WBS_HEADER_ALIASES = {
   code: ["codigo", "codigo wbs", "code", "wbs", "wbs code"],
   level: ["nivel", "level", "outline level"],
   title: ["actividad", "task name", "nombre de tarea", "title", "titulo", "name"],
-  startDate: ["inicio planeado", "start", "planned start", "start date"],
-  endDate: ["fin planeado", "finish", "planned finish", "end date", "finish date"],
-  actualStartDate: ["inicio real", "actual start"],
-  actualEndDate: ["fin real", "actual finish", "actual end"],
+  startDate: [
+    "inicio planeado",
+    "fecha inicio planeado",
+    "fecha incio planeado",
+    "inicio planificado",
+    "fecha inicio planificado",
+    "start",
+    "planned start",
+    "planned start date",
+    "start date",
+  ],
+  endDate: [
+    "fin planeado",
+    "fecha fin planeado",
+    "fin planificado",
+    "fecha fin planificado",
+    "finish",
+    "planned finish",
+    "planned finish date",
+    "end date",
+    "finish date",
+  ],
+  actualStartDate: ["inicio real", "fecha inicio real", "actual start", "actual start date"],
+  actualEndDate: ["fin real", "fecha fin real", "actual finish", "actual finish date", "actual end"],
   plannedCost: ["costo", "planned cost", "cost", "total cost"],
   duration: ["duracion", "duration"],
   baselineStartDate: ["baseline start", "inicio linea base", "inicio de linea base"],
@@ -121,33 +152,6 @@ const toPositiveInt = (value) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
-const ensureTemporaryViewerContainer = (containerId) => {
-  if (typeof document === "undefined") return { created: false };
-  let container = document.getElementById(containerId);
-  if (container) return { created: false, container };
-
-  container = document.createElement("div");
-  container.id = containerId;
-  container.dataset.temporaryViewer = "true";
-  container.style.position = "fixed";
-  container.style.left = "-10000px";
-  container.style.top = "0";
-  container.style.width = "1px";
-  container.style.height = "1px";
-  container.style.opacity = "0";
-  container.style.pointerEvents = "none";
-  document.body.appendChild(container);
-  return { created: true, container };
-};
-
-const removeTemporaryViewerContainer = (containerId) => {
-  if (typeof document === "undefined") return;
-  const container = document.getElementById(containerId);
-  if (container?.dataset?.temporaryViewer === "true") {
-    container.remove();
-  }
-};
-
 const getModelUrn = (model) => {
   const candidates = [
     model?.alternativeIdentifiers?.fileVersionUrn,
@@ -158,6 +162,9 @@ const getModelUrn = (model) => {
 
 const parseDateToIso = (value) => {
   if (!value && value !== 0) return "";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value.toISOString().slice(0, 10);
+  }
   if (typeof value === "number") {
     const parsed = XLSX.SSF.parse_date_code(value);
     if (!parsed?.y || !parsed?.m || !parsed?.d) return "";
@@ -166,8 +173,18 @@ const parseDateToIso = (value) => {
 
   const raw = toText(value);
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  if (/^\d{4}-\d{2}-\d{2}[T\s]/.test(raw)) {
+    const parsed = new Date(raw);
+    return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+  }
 
-  const dmy = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})$/);
+  const ymd = raw.match(/^(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?)?$/);
+  if (ymd) {
+    const dt = new Date(Date.UTC(Number(ymd[1]), Number(ymd[2]) - 1, Number(ymd[3])));
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString().slice(0, 10);
+  }
+
+  const dmy = raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?)?$/);
   if (dmy) {
     let y = Number(dmy[3]);
     if (y < 100) y += 2000;
@@ -334,43 +351,15 @@ const getNextWbsCodeForParent = (rows = [], parentCode = "") => {
   return normalizedParent ? `${normalizedParent}.${nextSuffix}` : String(nextSuffix);
 };
 
-const parseLegacyWbsRowsFromMatrix = (matrix = [], headerRowIndex = -1) => {
-  const seen = new Set();
-  const rows = [];
-  if (!Array.isArray(matrix) || !matrix.length) return rows;
+const detectLegacyWbsMatrix = (matrix = []) => {
+  if (!Array.isArray(matrix) || !matrix.length) return false;
 
-  const isLevelFormat = headerRowIndex >= 0;
-  const startIndex = headerRowIndex >= 0 ? headerRowIndex + 1 : 0;
-
-  matrix.slice(startIndex).forEach((rawRow, idx) => {
+  return matrix.some((rawRow) => {
     const row = Array.isArray(rawRow) ? rawRow : [];
     const code = pickDeepestCodeFromLevels(row) || normalizeWbsCode(row[0]);
-    const title = isLevelFormat ? toText(row[4]) : toText(row[1]);
-
-    if (!isValidWbsCode(code) || !title || seen.has(code)) return;
-
-    const level = getWbsLevel(code);
-    if (!level || level > 4) return;
-    seen.add(code);
-
-    const startDate = parseDateToIso(isLevelFormat ? row[5] : row[2]);
-    const endDate = parseDateToIso(isLevelFormat ? row[6] : row[3]);
-
-    rows.push({
-      id: `${code}-${idx + startIndex + 1}`,
-      code,
-      level,
-      title,
-      startDate,
-      endDate,
-      actualStartDate: parseDateToIso(row[7]),
-      actualEndDate: parseDateToIso(row[8]),
-      plannedCost: parseMoney(row[9]),
-      duration: getPlannedDurationValue(startDate, endDate, isLevelFormat ? row[10] : row[4]),
-    });
+    const title = toText(row[4]) || toText(row[1]);
+    return isValidWbsCode(code) && Boolean(title);
   });
-
-  return sortWbsRows(rows);
 };
 
 const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
@@ -622,9 +611,9 @@ const parseWbsRowsFromMatrix = (matrix = []) => {
   });
 
   if (headerRowIndex < 0) {
-    const legacyRows = parseLegacyWbsRowsFromMatrix(matrix);
+    const detectedLegacyFormat = detectLegacyWbsMatrix(matrix);
     return attachMatrixParseMeta([], {
-      errorMessage: legacyRows.length
+      errorMessage: detectedLegacyFormat
         ? "Se detecto el formato jerarquico anterior. Usa el nuevo formato plano con columnas Nivel, Codigo y Actividad."
         : "No se detecto un formato WBS valido. Se requieren columnas Nivel, Codigo y Actividad en una estructura plana por fila.",
     });
@@ -833,6 +822,7 @@ const buildGanttRows = (rows = []) => {
 export default function AECProjectWBSPlannerPage() {
   const { projectId } = useParams();
   const selectionStorageKey = `wbs_planner_selected_model_${projectId || "unknown"}`;
+  const projectName = useMemo(() => getProjectNameFromSession(projectId), [projectId]);
 
   const [viewMode, setViewMode] = useState("viewer");
   const [wbsRows, setWbsRows] = useState([]);
@@ -845,6 +835,7 @@ export default function AECProjectWBSPlannerPage() {
   const [selectedModelId, setSelectedModelId] = useState(null);
   const [selectedUrn, setSelectedUrn] = useState("");
   const [loadingViewer, setLoadingViewer] = useState(false);
+  const [viewerReady, setViewerReady] = useState(false);
 
   const [loadingWbs, setLoadingWbs] = useState(false);
   const [savingWbs, setSavingWbs] = useState(false);
@@ -864,7 +855,7 @@ export default function AECProjectWBSPlannerPage() {
 
   const safeJson = async (res) => {
     const c = res.headers.get("content-type") || "";
-    if (!c.includes("application/json")) throw new Error((await res.text()).slice(0, 300) || "Invalid response");
+    if (!c.includes("application/json")) throw new Error((await res.text()).slice(0, 300) || "Respuesta no valida del servidor");
     return res.json();
   };
 
@@ -893,9 +884,29 @@ export default function AECProjectWBSPlannerPage() {
   );
 
   const invalidEditableRowsCount = useMemo(() => countInvalidWbsRows(wbsLevel4Rows), [wbsLevel4Rows]);
+  const plannerControlsDisabled = viewMode === "dashboard" || viewMode === "gantt";
+  const selectModelDisabled = viewMode === "table" || plannerControlsDisabled;
+  const importControlsDisabled = plannerControlsDisabled || savingWbs || loadingWbs;
+  const matchDisabledReason = useMemo(() => {
+    if (!selectedModelId || !wbsSetId) return "";
+    if (!selectedUrn) return "Selecciona un modelo con URN valida para cargar el visor.";
+    if (viewMode !== "viewer") return "Abre Visor + tabla y espera a que el modelo cargue antes de emparejar.";
+    if (loadingViewer) return "Espera a que el visor visible termine de cargar.";
+    if (!viewerReady || !isProjectWbs4DViewerReady()) {
+      return "Carga el modelo en el visor visible antes de emparejar.";
+    }
+    return "";
+  }, [selectedModelId, wbsSetId, selectedUrn, viewMode, loadingViewer, viewerReady]);
+  const canRunMatching = useMemo(
+    () => Boolean(selectedModelId && wbsSetId && !runningMatch && !matchDisabledReason),
+    [selectedModelId, wbsSetId, runningMatch, matchDisabledReason]
+  );
 
-  const timelineMin = toText(matchRun?.timeline?.minDate);
-  const timelineMax = toText(matchRun?.timeline?.maxDate);
+  const wbsTimelineRange = useMemo(() => getTimelineRangeFromRows(wbsLevel4Rows), [wbsLevel4Rows]);
+  const matchedTimelineMin = toText(matchRun?.timeline?.minDate);
+  const matchedTimelineMax = toText(matchRun?.timeline?.maxDate);
+  const timelineMin = wbsTimelineRange.minDate || matchedTimelineMin;
+  const timelineMax = wbsTimelineRange.maxDate || matchedTimelineMax;
   const timelineControlMax = useMemo(
     () => (isIsoDate(timelineMax) ? addDaysIso(timelineMax, 1) : ""),
     [timelineMax]
@@ -955,7 +966,7 @@ export default function AECProjectWBSPlannerPage() {
     try {
       const res = await fetch(`${apiBase}/aec/${pId}/graphql-models`, { credentials: "include" });
       const json = await safeJson(res);
-      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "Failed to load models");
+      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo cargar la lista de modelos");
       setModels(json.data?.models || []);
     } finally {
       setLoadingModels(false);
@@ -967,7 +978,7 @@ export default function AECProjectWBSPlannerPage() {
       const q = toText(modelId) ? `?modelId=${encodeURIComponent(modelId)}` : "";
       const res = await fetch(`${apiBase}/aec/${pId}/wbs/latest${q}`, { credentials: "include" });
       const json = await safeJson(res);
-      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "Failed to load WBS");
+      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo cargar la WBS");
       return json;
     },
     [apiBase, pId]
@@ -980,7 +991,7 @@ export default function AECProjectWBSPlannerPage() {
         credentials: "include",
       });
       const json = await safeJson(res);
-      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "Failed to load matching");
+      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo cargar el emparejamiento");
       return json;
     },
     [apiBase, pId]
@@ -1032,7 +1043,7 @@ export default function AECProjectWBSPlannerPage() {
           }),
         });
         const json = await safeJson(res);
-        if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "Failed to save WBS");
+        if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo guardar la WBS");
         return json?.data || null;
       } finally {
         setSavingWbs(false);
@@ -1088,28 +1099,17 @@ export default function AECProjectWBSPlannerPage() {
     }
 
     if (!selectedUrn) {
-      toast.warning("Selecciona un modelo con URN valida para extraer el snapshot del viewer.");
+      toast.warning("Selecciona un modelo con URN valida para extraer el snapshot del visor.");
       return;
     }
 
-    if (viewMode === "viewer" && loadingViewer) {
-      toast.warning("Espera a que el viewer termine de cargar antes de emparejar.");
+    if (matchDisabledReason) {
+      toast.warning(matchDisabledReason);
       return;
     }
 
     setRunningMatch(true);
-    let initializedTemporaryViewer = false;
-    let createdTemporaryContainer = false;
     try {
-      let snapshotSource = "active_viewer";
-      if (!isProjectWbs4DViewerReady()) {
-        const tempContainer = ensureTemporaryViewerContainer(MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
-        createdTemporaryContainer = tempContainer.created;
-        await initProjectWbs4DViewer(selectedUrn, MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
-        initializedTemporaryViewer = true;
-        snapshotSource = "temporary_viewer";
-      }
-
       const snapshot = await extractProjectWbs4DViewerLeafSnapshot();
       const snapshotRows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
       const snapshotStats = snapshot?.stats || {};
@@ -1134,9 +1134,9 @@ export default function AECProjectWBSPlannerPage() {
         }),
       });
       const json = await safeJson(res);
-      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "Failed to run matching");
+      if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo ejecutar el emparejamiento");
       toast.info(
-        `Snapshot viewer (${snapshotSource}): hojas ${snapshotStats.totalLeafNodes || 0}, utiles ${snapshotStats.extractedRows || 0}, matcheables ${matchableRows}, omitidos ${snapshotStats.skippedRows || 0}`
+        `Snapshot del visor (visor_visible): hojas ${snapshotStats.totalLeafNodes || 0}, utiles ${snapshotStats.extractedRows || 0}, matcheables ${matchableRows}, omitidos ${snapshotStats.skippedRows || 0}`
       );
       toast.success(`Matching listo: ${json?.data?.matchedElements || 0}/${json?.data?.totalElements || 0}`);
       const latest = await fetchLatestMatch(selectedModelId);
@@ -1144,15 +1144,9 @@ export default function AECProjectWBSPlannerPage() {
     } catch (err) {
       toast.error(err?.message || "No se pudo ejecutar matching.");
     } finally {
-      if (initializedTemporaryViewer) {
-        teardownProjectWbs4DViewer();
-      }
-      if (createdTemporaryContainer) {
-        removeTemporaryViewerContainer(MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
-      }
       setRunningMatch(false);
     }
-  }, [apiBase, pId, selectedModelId, wbsSetId, selectedUrn, viewMode, loadingViewer, fetchLatestMatch]);
+  }, [apiBase, pId, selectedModelId, wbsSetId, selectedUrn, matchDisabledReason, fetchLatestMatch]);
 
   const openModelDialog = async () => {
     setIsModelDialogOpen(true);
@@ -1449,9 +1443,9 @@ export default function AECProjectWBSPlannerPage() {
     setTimelineDate("");
     setMatchRun(null);
     setResolvedViewerDbIds({});
+    setViewerReady(false);
     teardownProjectWbs4DViewer();
     clearProjectWbs4DSequence();
-    removeTemporaryViewerContainer(MATCH_SNAPSHOT_VIEWER_CONTAINER_ID);
   }, [selectedModelId]);
 
   useEffect(() => {
@@ -1468,12 +1462,20 @@ export default function AECProjectWBSPlannerPage() {
   }, [selectedModel]);
 
   useEffect(() => {
-    if (viewMode !== "viewer" || !selectedUrn) return;
+    if (viewMode !== "viewer" || !selectedUrn) {
+      setViewerReady(false);
+      return;
+    }
     let cancelled = false;
     setLoadingViewer(true);
+    setViewerReady(false);
     initProjectWbs4DViewer(selectedUrn, VIEWER_CONTAINER_ID)
+      .then(() => {
+        if (!cancelled) setViewerReady(true);
+      })
       .catch((error) => {
         if (!cancelled) {
+          setViewerReady(false);
           toast.error(error?.message || "No se pudo inicializar el viewer.");
         }
       })
@@ -1483,6 +1485,7 @@ export default function AECProjectWBSPlannerPage() {
 
     return () => {
       cancelled = true;
+      setViewerReady(false);
       teardownProjectWbs4DViewer();
     };
   }, [viewMode, selectedUrn]);
@@ -1591,7 +1594,8 @@ export default function AECProjectWBSPlannerPage() {
     <AppLayout>
       <div className="mx-auto w-full max-w-[1800px] space-y-6 p-6">
         <div className="border-b border-border pb-4">
-          <h1 className="text-2xl font-bold tracking-tight text-foreground">Project Construction Traking</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Planeador WBS del proyecto</h1>
+          <p className="mt-2 text-sm text-muted-foreground">Proyecto: {projectName || "No disponible"}</p>
         </div>
 
         <input
@@ -1612,25 +1616,29 @@ export default function AECProjectWBSPlannerPage() {
 
         <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
           <div className="mb-3">
-            <h2 className="text-sm font-semibold text-foreground">Modos de Visualización</h2>
+            <h2 className="text-sm font-semibold text-foreground">Modos de visualizacion</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} onClick={() => setViewMode("table")}>
-              Tabla WBS
+              Tabla
             </Button>
             <Button size="sm" variant={viewMode === "viewer" ? "default" : "ghost"} onClick={() => setViewMode("viewer")}>
-              <MonitorPlay className="mr-1 h-4 w-4" /> Viewer + Tabla
+              <MonitorPlay className="mr-1 h-4 w-4" /> Visor + tabla
             </Button>
             <Button size="sm" variant={viewMode === "dashboard" ? "default" : "ghost"} onClick={() => setViewMode("dashboard")}>
-              <Presentation className="mr-1 h-4 w-4" /> Dashboard
+              <Presentation className="mr-1 h-4 w-4" /> Panel
             </Button>
             <Button size="sm" variant={viewMode === "gantt" ? "default" : "ghost"} onClick={() => setViewMode("gantt")}>
-              <FileText className="mr-1 h-4 w-4" /> Gant
+              <FileText className="mr-1 h-4 w-4" /> Gantt
             </Button>
           </div>
         </div>
 
-        <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+        <div
+          className={`rounded-xl border border-border bg-card px-4 py-3 shadow-sm ${
+            plannerControlsDisabled ? "opacity-70" : ""
+          }`}
+        >
           <div className="mb-3">
             <h2 className="text-sm font-semibold text-foreground">Controles</h2>
           </div>
@@ -1638,7 +1646,7 @@ export default function AECProjectWBSPlannerPage() {
             <Button
               variant="outline"
               className="gap-2"
-              disabled={savingWbs || loadingWbs}
+              disabled={importControlsDisabled}
               onClick={() => fileInputRef.current?.click()}
             >
               <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar Excel WBS"}
@@ -1647,20 +1655,25 @@ export default function AECProjectWBSPlannerPage() {
             <Button
               variant="outline"
               className="gap-2"
-              disabled={savingWbs || loadingWbs}
+              disabled={importControlsDisabled}
               onClick={() => projectFileInputRef.current?.click()}
             >
-              <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar Project WBS"}
-            </Button>
-
-            <Button variant="outline" className="gap-2" onClick={openModelDialog}>
-              <Boxes className="h-4 w-4" /> Seleccionar Modelo
+              <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar WBS de Project"}
             </Button>
 
             <Button
               variant="outline"
               className="gap-2"
-              disabled={!selectedModelId || !wbsSetId || runningMatch}
+              disabled={selectModelDisabled}
+              onClick={openModelDialog}
+            >
+              <Boxes className="h-4 w-4" /> Seleccionar modelo
+            </Button>
+
+            <Button
+              variant="outline"
+              className="gap-2"
+              disabled={plannerControlsDisabled || !canRunMatching}
               onClick={runMatching}
             >
               <Link2 className="h-4 w-4" /> {runningMatch ? "Emparejando..." : "Emparejar Modelo-WBS"}
@@ -1668,9 +1681,18 @@ export default function AECProjectWBSPlannerPage() {
 
             {loadingWbs ? <Badge variant="secondary">Cargando WBS...</Badge> : null}
             {sourceFileName ? <Badge variant="outline">Fuente: {sourceFileName}</Badge> : null}
+            {plannerControlsDisabled ? (
+              <Badge variant="outline">Los controles operativos no aplican en este modo</Badge>
+            ) : null}
+            {!plannerControlsDisabled && viewMode === "table" ? (
+              <Badge variant="outline">Seleccionar modelo solo aplica en Visor + tabla</Badge>
+            ) : null}
+            {!plannerControlsDisabled && matchDisabledReason ? (
+              <Badge variant="outline">{matchDisabledReason}</Badge>
+            ) : null}
             {matchRun?.run ? (
               <Badge variant="secondary">
-                Match {matchRun.run.matchedElements}/{matchRun.run.totalElements}
+                Emparejados {matchRun.run.matchedElements}/{matchRun.run.totalElements}
               </Badge>
             ) : null}
           </div>
@@ -1698,7 +1720,7 @@ export default function AECProjectWBSPlannerPage() {
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
               <div className="min-w-0 rounded-xl border border-border bg-card shadow-sm">
                 <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3 text-xs">
-                  <span>Viewer 4D</span>
+                  <span>Visor 4D</span>
                   <Badge variant="outline">Activos: {activeRows.length}</Badge>
                 </div>
 
@@ -1912,9 +1934,10 @@ export default function AECProjectWBSPlannerPage() {
           const nextSelected = ids[0];
           setSelectedModelId(nextSelected);
           setIsModelDialogOpen(false);
-          if (ids.length > 1) toast.warning("Solo se usara el primer modelo para el viewer 4D");
+          if (ids.length > 1) toast.warning("Solo se usara el primer modelo para el visor 4D");
         }}
       />
+      <BlockingPageLoader visible={runningMatch} label="Emparejando modelo con WBS..." />
     </AppLayout>
   );
 }

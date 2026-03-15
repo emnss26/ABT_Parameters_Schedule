@@ -413,10 +413,10 @@ const deduplicateModelElements = (elements = []) => {
     const extra = parseJson(element.extra_props) || {};
     const viewerDbId = parsePositiveInt(extra.viewerDbId);
     const key =
-      toText(element.revit_element_id) ||
-      toText(extra.elementId) ||
+      (viewerDbId ? `db:${viewerDbId}` : "") ||
       toText(extra.externalElementId) ||
-      (viewerDbId ? `db:${viewerDbId}` : "");
+      toText(extra.elementId) ||
+      "";
 
     if (!key) {
       fallbackIndex += 1;
@@ -1038,18 +1038,20 @@ const GetLatestWbsModelMatching = async (req, res, next) => {
     const datedMatchedRows = mappedRows.filter(
       (row) => row.matchStatus === "matched" && row.startDate && row.endDate
     );
+    const datedWbsRows = wbsItems.filter((row) => row.startDate && row.endDate);
+    const timelineSourceRows = datedWbsRows.length > 0 ? datedWbsRows : datedMatchedRows;
 
     const timelineMinDate =
-      datedMatchedRows.length > 0
-        ? datedMatchedRows
+      timelineSourceRows.length > 0
+        ? timelineSourceRows
             .map((row) => row.startDate)
             .sort((a, b) => String(a).localeCompare(String(b)))[0]
         : null;
     const timelineMaxDate =
-      datedMatchedRows.length > 0
-        ? datedMatchedRows
+      timelineSourceRows.length > 0
+        ? timelineSourceRows
             .map((row) => row.endDate)
-            .sort((a, b) => String(a).localeCompare(String(b)))[datedMatchedRows.length - 1]
+            .sort((a, b) => String(a).localeCompare(String(b)))[timelineSourceRows.length - 1]
         : null;
 
     const byWbsCode = buildByWbsSummary(rows, wbsItems);
@@ -1077,6 +1079,7 @@ const GetLatestWbsModelMatching = async (req, res, next) => {
           minDate: timelineMinDate,
           maxDate: timelineMaxDate,
           matchedRowsWithDates: datedMatchedRows.length,
+          wbsRowsWithDates: datedWbsRows.length,
         },
       },
     });

@@ -90,8 +90,8 @@ export default function ProjectParameterComplianceTable({
         Disciplina: row.disciplineName,
         "Total Analizado": row.totalElements,
         "Total Completo": row.fullyCompliant,
-        "Compliance %": row.averageCompliancePct,
-        "Ultimo Check": formatDateTime(row.lastCheckAt),
+        "Cumplimiento %": row.averageCompliancePct,
+        "Ultima revision": formatDateTime(row.lastCheckAt),
       })),
     [normalizedRows]
   )
@@ -100,9 +100,9 @@ export default function ProjectParameterComplianceTable({
     if (!exportRows.length) return
     const wb = XLSX.utils.book_new()
     const sheet = XLSX.utils.json_to_sheet(exportRows)
-    XLSX.utils.book_append_sheet(wb, sheet, "Project_Compliance")
+    XLSX.utils.book_append_sheet(wb, sheet, "Cumplimiento_Proyecto")
     const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
-    XLSX.writeFile(wb, `Project_Parameter_Compliance_${stamp}.xlsx`)
+    XLSX.writeFile(wb, `Cumplimiento_Parametros_Proyecto_${stamp}.xlsx`)
   }
 
   const handleExportPdf = () => {
@@ -117,7 +117,7 @@ export default function ProjectParameterComplianceTable({
       body: exportRows.map((row) => Object.values(row)),
     })
     const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")
-    doc.save(`Project_Parameter_Compliance_${stamp}.pdf`)
+    doc.save(`Cumplimiento_Parametros_Proyecto_${stamp}.pdf`)
   }
 
   return (
@@ -168,21 +168,21 @@ export default function ProjectParameterComplianceTable({
               <TableHead className="min-w-[220px]">Disciplina</TableHead>
               <TableHead className="w-[150px] text-right">Total Analizado</TableHead>
               <TableHead className="w-[150px] text-right">Total Completo</TableHead>
-              <TableHead className="w-[140px] text-right">Compliance %</TableHead>
-              <TableHead className="min-w-[180px]">Ultimo Check</TableHead>
+              <TableHead className="w-[140px] text-right">Cumplimiento %</TableHead>
+              <TableHead className="min-w-[180px]">Ultima revision</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               <TableRow>
                 <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
-                  Cargando resumen de compliance...
+                  Cargando resumen de cumplimiento...
                 </TableCell>
               </TableRow>
             ) : !normalizedRows.length ? (
               <TableRow>
                 <TableCell colSpan={6} className="h-20 text-center text-muted-foreground">
-                  Aun no hay datos de compliance persistidos para este proyecto.
+                  Aun no hay datos de cumplimiento guardados para este proyecto.
                 </TableCell>
               </TableRow>
             ) : (

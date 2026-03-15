@@ -48,14 +48,14 @@ export default function SelectModelsModal({
         if (!isOpen) onClose();
       }}
     >
-      <DialogContent>
+        <DialogContent>
         <DialogHeader>
-          <DialogTitle>Select the models to analyze</DialogTitle>
+          <DialogTitle>Selecciona los modelos a analizar</DialogTitle>
         </DialogHeader>
 
         <div className="max-h-80 space-y-2 overflow-y-auto py-4">
           {loading ? (
-            <span className="text-gray-500">Loading models...</span>
+            <span className="text-gray-500">Cargando modelos...</span>
           ) : Array.isArray(models) && models.length > 0 ? (
             models.map((model) => (
               <label
@@ -73,20 +73,20 @@ export default function SelectModelsModal({
               </label>
             ))
           ) : (
-            <span className="text-gray-500">No models available to select.</span>
+            <span className="text-gray-500">No hay modelos disponibles para seleccionar.</span>
           )}
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={onClose} disabled={saving}>
-            Cancel
+            Cancelar
           </Button>
           <Button
             className="bg-[rgb(170,32,47)] text-white"
             disabled={selected.length === 0 || saving}
             onClick={handleSave}
           >
-            {saving ? "Saving..." : "Save selection"}
+            {saving ? "Guardando..." : "Guardar seleccion"}
           </Button>
         </DialogFooter>
       </DialogContent>
