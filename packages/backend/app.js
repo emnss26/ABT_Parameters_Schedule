@@ -12,6 +12,7 @@ const app = express();
 const isProduction = config.env === "production";
 const jsonBodyLimit = process.env.JSON_BODY_LIMIT || "15mb";
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const BASE_PATH = "/ControlPlanos";
 
 const toOrigin = (value) => {
   const raw = String(value || "").trim();
@@ -60,21 +61,34 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: frontendOrigin || config.frontendUrl,
+    origin(origin, callback) {
+      
+      if (!origin) return callback(null, true);
+
+      const normalizedOrigin = toOrigin(origin);
+      if (normalizedOrigin && normalizedOrigin === frontendOrigin) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("CORS: origen no permitido."));
+    },
     credentials: true,
   })
 );
 
-// Enforce exact frontend origin matching for state-changing methods in production.
+// Protección CSRF/origin exacta para métodos que cambian estado
 app.use((req, res, next) => {
   if (isProduction && STATE_CHANGING_METHODS.has(req.method)) {
     const requestOrigin = getRequestOrigin(req);
+
     if (!frontendOrigin || !requestOrigin || requestOrigin !== frontendOrigin) {
-      return res
-        .status(403)
-        .json({ success: false, message: "Protección CSRF: origen no permitido." });
+      return res.status(403).json({
+        success: false,
+        message: "Protección CSRF: origen no permitido.",
+      });
     }
   }
+
   return next();
 });
 
@@ -84,12 +98,20 @@ if (!isProduction) {
 
 app.disable("etag");
 
-app.use("/auth", require("./resources/routers/auth.router"));
-app.use("/aec", require("./resources/routers/aec.router"));
-app.use("/acc", require("./resources/routers/acc.router"));
+// Routers
+const authRouter = require("./resources/routers/auth.router");
+const aecRouter = require("./resources/routers/aec.router");
+const accRouter = require("./resources/routers/acc.router");
 
 
-app.get("/health", (_req, res) => {
+// APIs en raíz y en /ControlPlanos para compatibilidad local + IIS
+app.use(["/auth", `${BASE_PATH}/auth`], authRouter);
+app.use(["/aec", `${BASE_PATH}/aec`], aecRouter);
+app.use(["/acc", `${BASE_PATH}/acc`], accRouter);
+
+
+// Health
+app.get(["/health", `${BASE_PATH}/health`], (_req, res) => {
   res.json({
     success: true,
     message: "Backend API is online",
@@ -97,33 +119,40 @@ app.get("/health", (_req, res) => {
   });
 });
 
-// Serve SPA only in production and never for API prefixes.
-if (isProduction) {
-  const distPath = path.join(__dirname, "dist");
-  const indexPath = path.join(distPath, "index.html");
 
-  app.use(express.static(distPath));
+const publicPath = path.join(__dirname, "public");
+const indexPath = path.join(publicPath, "index.html");
 
-  app.use((req, res, next) => {
-    if (req.method !== "GET") {
-      return next();
-    }
 
-    const requestPath = req.path || "";
-    if (
-      requestPath.startsWith("/auth") ||
-      requestPath.startsWith("/aec") ||
-      requestPath.startsWith("/acc") ||
-      requestPath.startsWith("/plans") ||
-      requestPath.startsWith("/dm") ||
-      requestPath.startsWith("/health")
-    ) {
-      return next();
-    }
+app.use(express.static(publicPath));
+app.use(BASE_PATH, express.static(publicPath));
 
+
+app.get("*", (req, res, next) => {
+  if (req.method !== "GET") return next();
+
+  const requestPath = req.path || "";
+
+  const isApiPath =
+    requestPath.startsWith("/auth") ||
+    requestPath.startsWith("/aec") ||
+    requestPath.startsWith("/acc") ||
+    requestPath.startsWith("/plans") ||
+
+    requestPath.startsWith(`${BASE_PATH}/auth`) ||
+    requestPath.startsWith(`${BASE_PATH}/aec`) ||
+    requestPath.startsWith(`${BASE_PATH}/acc`) ||
+    requestPath.startsWith(`${BASE_PATH}/plans`) ;
+
+  if (isApiPath) return next();
+
+
+  if (requestPath === "/" || requestPath.startsWith(BASE_PATH)) {
     return res.sendFile(indexPath);
-  });
-}
+  }
+
+  return next();
+});
 
 if (!isProduction) {
   app.get("/boom", (_req, _res) => {
