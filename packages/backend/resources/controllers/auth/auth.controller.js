@@ -87,7 +87,7 @@ const GetToken = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: "Token generated correctly",
+      message: "Token generado correctamente",
       data: { access_token: token },
       error: null,
     })
@@ -109,7 +109,7 @@ const PostLogout = async (req, res, next) => {
 
     return res.status(200).json({
       success: true,
-      message: "Logged out",
+      message: "Sesión cerrada correctamente",
       data: null,
       error: null,
     })

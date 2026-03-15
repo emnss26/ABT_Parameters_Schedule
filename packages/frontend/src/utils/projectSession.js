@@ -104,9 +104,12 @@ export const resolveProjectSessionContext = async ({ projectId, apiBase, fetchIm
   }
 
   try {
-    const response = await requester(`${normalizedApiBase}/aec/graphql-projects`, {
+    const response = await requester(
+      `${normalizedApiBase}/aec/${encodeURIComponent(normalizedProjectId)}/project-metadata`,
+      {
       credentials: "include",
-    });
+      }
+    );
     if (!response.ok) {
       return buildEmptyProjectContext(normalizedProjectId);
     }
@@ -117,18 +120,16 @@ export const resolveProjectSessionContext = async ({ projectId, apiBase, fetchIm
     }
 
     const payload = await response.json();
-    const projects = Array.isArray(payload?.data?.aecProjects) ? payload.data.aecProjects : [];
-    const matchedProject =
-      projects.find((project) => toText(project?.id) === normalizedProjectId) || null;
-
-    if (!matchedProject) {
+    const responseProjectId = toText(payload?.data?.projectId);
+    const responseProjectName = toText(payload?.data?.projectName);
+    if (responseProjectId !== normalizedProjectId || !responseProjectName) {
       return buildEmptyProjectContext(normalizedProjectId);
     }
 
     const resolvedContext = {
       projectId: normalizedProjectId,
-      projectName: toText(matchedProject?.name),
-      altProjectId: toText(matchedProject?.alternativeIdentifiers?.dataManagementAPIProjectId),
+      projectName: responseProjectName,
+      altProjectId: toText(payload?.data?.altProjectId),
     };
 
     saveProjectSessionContext(resolvedContext);

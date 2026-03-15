@@ -1,7 +1,7 @@
 const express = require("express");
 const checkSession = require("../../middlewares/checkSession");
 
-const { GetAECProjects } = require("../controllers/aec_controllers/aec.projects.controller");
+const { GetAECProjectMetadata, GetAECProjects } = require("../controllers/aec_controllers/aec.projects.controller");
 const { GetAECModels } = require("../controllers/aec_controllers/aec.models.controller");
 const {
   GetAECModelParametersByCategory,
@@ -27,6 +27,7 @@ const router = express.Router();
 router.use(checkSession);
 
 router.get("/graphql-projects", GetAECProjects);
+router.get("/:projectId/project-metadata", GetAECProjectMetadata);
 router.get("/:projectId/graphql-models", GetAECModels);
 
 

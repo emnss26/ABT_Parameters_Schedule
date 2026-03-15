@@ -135,7 +135,6 @@ async function getACCProjectUser(accessToken, projectId, userId) {
           : status === 401
             ? "ACCProjectUserUnauthorized"
             : "ACCProjectUserFetchFailed";
-    wrappedError.details = details;
     throw wrappedError;
   }
 }

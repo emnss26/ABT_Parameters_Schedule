@@ -13,6 +13,25 @@ const isProduction = config.env === "production";
 const jsonBodyLimit = process.env.JSON_BODY_LIMIT || "15mb";
 const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
+const toOrigin = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return "";
+  }
+};
+
+const frontendOrigin = toOrigin(config.frontendUrl);
+
+const getRequestOrigin = (req) => {
+  const originHeader = toOrigin(req.headers.origin);
+  if (originHeader) return originHeader;
+  return toOrigin(req.headers.referer);
+};
+
 app.set("trust proxy", 1);
 
 app.use(
@@ -30,7 +49,7 @@ app.use(
     legacyHeaders: false,
     message: {
       success: false,
-      message: "Too many requests, please try again later.",
+      message: "Demasiadas solicitudes. Intenta nuevamente más tarde.",
     },
   })
 );
@@ -41,19 +60,19 @@ app.use(cookieParser());
 
 app.use(
   cors({
-    origin: config.frontendUrl,
+    origin: frontendOrigin || config.frontendUrl,
     credentials: true,
   })
 );
 
-// Basic origin validation for state-changing methods in production.
+// Enforce exact frontend origin matching for state-changing methods in production.
 app.use((req, res, next) => {
   if (isProduction && STATE_CHANGING_METHODS.has(req.method)) {
-    const origin = String(req.headers.origin || req.headers.referer || "").trim();
-    if (!origin || !origin.startsWith(config.frontendUrl)) {
+    const requestOrigin = getRequestOrigin(req);
+    if (!frontendOrigin || !requestOrigin || requestOrigin !== frontendOrigin) {
       return res
         .status(403)
-        .json({ success: false, message: "CSRF Protection: Origin not allowed" });
+        .json({ success: false, message: "Protección CSRF: origen no permitido." });
     }
   }
   return next();
@@ -85,7 +104,11 @@ if (isProduction) {
 
   app.use(express.static(distPath));
 
-  app.get("*", (req, res, next) => {
+  app.use((req, res, next) => {
+    if (req.method !== "GET") {
+      return next();
+    }
+
     const requestPath = req.path || "";
     if (
       requestPath.startsWith("/auth") ||

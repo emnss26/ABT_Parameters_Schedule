@@ -22,7 +22,7 @@ function errorHandler(err, req, res, next) {
     clientError.name = err.name;
   }
 
-  if (err.details !== undefined) {
+  if (!isProduction && err.details !== undefined) {
     clientError.details = err.details;
   }
 

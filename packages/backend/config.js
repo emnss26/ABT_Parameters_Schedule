@@ -4,8 +4,12 @@ const ENV = process.env.NODE_ENV || "development";
 
 const REQUIRED_ENV_VARS = ["APS_CLIENT_ID", "APS_CLIENT_SECRET", "APS_CALLBACK_URL"];
 
+if (ENV === "production") {
+  REQUIRED_ENV_VARS.push("SESSION_COOKIE_SECRET");
+}
+
 for (const key of REQUIRED_ENV_VARS) {
-  if (!process.env[key]) {
+  if (!String(process.env[key] ?? "").trim()) {
     console.error(`Missing required environment variable: ${key}`);
     process.exit(1);
   }

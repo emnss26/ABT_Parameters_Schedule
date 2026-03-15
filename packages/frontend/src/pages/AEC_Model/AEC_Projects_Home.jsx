@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useCookies } from "react-cookie";
 import { FolderOpen } from "lucide-react";
 
 import AppLayout from "@/components/general_component/AppLayout";
@@ -13,7 +12,6 @@ export default function AECProjectsPage() {
   const [projects, setProjects] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  useCookies(["access_token"]);
   const navigate = useNavigate();
   const requestDedupRef = useRef(new Map());
 
@@ -23,6 +21,20 @@ export default function AECProjectsPage() {
     const last = requestDedupRef.current.get(key) || 0;
     requestDedupRef.current.set(key, now);
     return now - last < windowMs;
+  }, []);
+
+  const safeJson = useCallback(async (response) => {
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      await response.text();
+      throw new Error("El servidor devolvió una respuesta no válida.");
+    }
+
+    try {
+      return await response.json();
+    } catch {
+      throw new Error("El servidor devolvió JSON inválido.");
+    }
   }, []);
 
   useEffect(() => {
@@ -41,7 +53,7 @@ export default function AECProjectsPage() {
           return;
         }
 
-        const result = await response.json();
+        const result = await safeJson(response);
 
         if (!response.ok || !result?.success) {
           throw new Error(result?.message || result?.error || "No se pudo obtener la lista de proyectos.");
@@ -53,15 +65,15 @@ export default function AECProjectsPage() {
 
         setProjects(result.data?.aecProjects || []);
         setError("");
-      } catch {
-        setError("No se pudieron cargar los proyectos. Revisa tu conexión.");
+      } catch (err) {
+        setError(err?.message || "No se pudieron cargar los proyectos. Revisa tu conexión.");
       } finally {
         setLoading(false);
       }
     };
 
     fetchAccProjects();
-  }, [navigate, shouldSkipDevDuplicateFetch]);
+  }, [navigate, safeJson, shouldSkipDevDuplicateFetch]);
 
   const openProject = (project, target) => {
     saveProjectSessionContext({
@@ -75,7 +87,7 @@ export default function AECProjectsPage() {
   return (
     <AppLayout>
       <div className="grid min-h-[80vh] grid-cols-1 items-center gap-8 p-6 lg:grid-cols-2">
-        <div className="flex items-center justify-center animate-in fade-in duration-700 slide-in-from-left-10">
+        <div className="flex animate-in items-center justify-center fade-in duration-700 slide-in-from-left-10">
           <img
             src="/Abitat_img.png"
             alt="Abitat Construction Solutions"
@@ -88,7 +100,7 @@ export default function AECProjectsPage() {
 
           <div className="relative flex min-h-[400px] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-100 bg-white p-1 shadow-xl">
             {loading ? (
-              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-white/90 backdrop-blur-sm animate-in fade-in duration-300">
+              <div className="absolute inset-0 z-10 flex animate-in flex-col items-center justify-center bg-white/90 backdrop-blur-sm fade-in duration-300">
                 <AbitatLogoLoader className="scale-75" />
                 <p className="mt-4 animate-pulse text-sm font-medium text-gray-500">Cargando...</p>
               </div>

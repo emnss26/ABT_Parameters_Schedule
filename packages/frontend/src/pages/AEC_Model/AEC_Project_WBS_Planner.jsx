@@ -384,7 +384,7 @@ const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
 
   if (indexes.level < 0 || indexes.code < 0 || indexes.title < 0) {
     return attachMatrixParseMeta([], {
-      errorMessage: "El Excel WBS debe incluir al menos las columnas Nivel, Codigo y Actividad.",
+      errorMessage: "El Excel WBS debe incluir al menos las columnas Nivel, Código y Actividad.",
     });
   }
 
@@ -614,8 +614,8 @@ const parseWbsRowsFromMatrix = (matrix = []) => {
     const detectedLegacyFormat = detectLegacyWbsMatrix(matrix);
     return attachMatrixParseMeta([], {
       errorMessage: detectedLegacyFormat
-        ? "Se detecto el formato jerarquico anterior. Usa el nuevo formato plano con columnas Nivel, Codigo y Actividad."
-        : "No se detecto un formato WBS valido. Se requieren columnas Nivel, Codigo y Actividad en una estructura plana por fila.",
+        ? "Se detectó el formato jerárquico anterior. Usa el nuevo formato plano con columnas Nivel, Código y Actividad."
+        : "No se detectó un formato WBS válido. Se requieren columnas Nivel, Código y Actividad en una estructura plana por fila.",
     });
   }
 
@@ -1332,11 +1332,10 @@ export default function AECProjectWBSPlannerPage() {
         if (String(row.id) !== String(rowId)) return row;
 
         if (field === "code") {
-          const normalizedCode = normalizeWbsCode(value);
           return {
             ...row,
-            code: normalizedCode,
-            level: getWbsLevel(normalizedCode),
+            code: String(value ?? ""),
+            level: getWbsLevel(value),
           };
         }
 
@@ -1672,7 +1671,7 @@ export default function AECProjectWBSPlannerPage() {
               disabled={importControlsDisabled}
               onClick={() => projectFileInputRef.current?.click()}
             >
-              <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar WBS de Project"}
+              <Upload className="h-4 w-4" /> {savingWbs ? "Guardando..." : "Cargar WBS de Microsoft Project"}
             </Button>
 
             <Button

@@ -11,7 +11,7 @@ export default function HomePage() {
         <img
           src="/Abitat_img.png"
           alt="Abitat Construction Solutions"
-          className="mb-6 w-auto max-h-[160px] object-contain md:max-h-[180px]"
+          className="mb-6 max-h-[160px] w-auto object-contain md:max-h-[180px]"
           style={{ filter: "drop-shadow(0 8px 24px rgba(0,0,0,0.10))" }}
         />
 

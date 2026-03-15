@@ -198,6 +198,9 @@ const toValidDbIds = (dbIds = []) =>
     )
   );
 
+const mergeDbIds = (...groups) =>
+  toValidDbIds(groups.flatMap((group) => (Array.isArray(group) ? group : [group])));
+
 const buildDbIdSignature = (dbIds = []) =>
   toValidDbIds(dbIds)
     .sort((left, right) => left - right)
@@ -352,7 +355,7 @@ const buildViewerElementIdIndex = async () => {
 
       const keys = extractElementIdKeysFromBulkResult(item);
       keys.forEach((key) => {
-        if (!index.has(key)) index.set(key, dbId);
+        index.set(key, mergeDbIds(index.get(key), dbId));
       });
     });
   }
@@ -452,6 +455,8 @@ const extractDirectViewerDbIdFromRow = (row) => {
 
   return null;
 };
+
+const getIndexedViewerDbIds = (elementIdIndex, key) => mergeDbIds(elementIdIndex?.get(key));
 
 const getFragmentList = (model) => model?.getFragmentList?.() || null;
 
@@ -776,6 +781,7 @@ export const resolveProjectWbs4DViewerDbIdsForRows = async (rows = []) => {
   });
 
   let matchedFromIndexRows = 0;
+  let ambiguousRows = 0;
   let unmatchedRows = 0;
 
   if (unresolvedRows.length > 0) {
@@ -783,15 +789,14 @@ export const resolveProjectWbs4DViewerDbIdsForRows = async (rows = []) => {
 
     unresolvedRows.forEach(({ row, rowIndex }) => {
       const keys = extractElementIdKeysFromRow(row);
-      const matchedDbId = keys
-        .map((key) => elementIdIndex.get(key))
-        .map(parsePositiveDbId)
-        .find((dbId) => Number.isFinite(dbId));
+      const matchedDbIds = mergeDbIds(keys.flatMap((key) => getIndexedViewerDbIds(elementIdIndex, key)));
 
-      if (matchedDbId) {
-        resolvedDbIds.add(matchedDbId);
-        resolvedByRowIndex[rowIndex] = matchedDbId;
+      if (matchedDbIds.length === 1) {
+        resolvedDbIds.add(matchedDbIds[0]);
+        resolvedByRowIndex[rowIndex] = matchedDbIds[0];
         matchedFromIndexRows += 1;
+      } else if (matchedDbIds.length > 1) {
+        ambiguousRows += 1;
       } else {
         unmatchedRows += 1;
       }
@@ -803,6 +808,7 @@ export const resolveProjectWbs4DViewerDbIdsForRows = async (rows = []) => {
     totalRows: safeRows.length,
     matchedDirectRows,
     matchedFromIndexRows,
+    ambiguousRows,
     unmatchedRows,
     resolvedByRowIndex,
   };

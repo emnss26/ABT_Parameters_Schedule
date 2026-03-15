@@ -1,11 +1,20 @@
 const axios = require("axios")
 const config = require("../config")
-const { verifyAPSToken } = require("../utils/auth_utils/jwt.utils")
+const { decodeIssuedApsTokenPayload, verifyAPSToken } = require("../utils/auth_utils/jwt.utils")
 const {
   REFRESH_SESSION_COOKIE_NAME,
   getRemainingRefreshSessionMs,
   verifyRefreshSession,
 } = require("../utils/auth_utils/refresh.session.utils")
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+])
 
 const buildCookieOptions = () => {
   const isProduction = process.env.NODE_ENV === "production"
@@ -25,6 +34,17 @@ const clearSessionCookies = (res, cookieOptions) => {
   res.clearCookie("access_token", cookieOptions)
   res.clearCookie("refresh_token", cookieOptions)
   res.clearCookie(REFRESH_SESSION_COOKIE_NAME, cookieOptions)
+}
+
+const isTransientSessionError = (error) => {
+  if (!error) return false
+  if (error?.code === "TokenValidationUnavailable") return true
+
+  const status = Number(error?.response?.status || error?.status)
+  if (status >= 500 && status < 600) return true
+
+  const networkCode = String(error?.code || "").trim().toUpperCase()
+  return TRANSIENT_NETWORK_ERROR_CODES.has(networkCode)
 }
 
 async function checkSession(req, res, next) {
@@ -53,6 +73,12 @@ async function checkSession(req, res, next) {
           }
         }
       } catch (tokenError) {
+        if (!refreshToken && isTransientSessionError(tokenError)) {
+          return res.status(503).json({
+            message: "No fue posible validar la sesión por un problema temporal del servicio. Intenta nuevamente.",
+          })
+        }
+
         // Access token is invalid or expired; continue with refresh flow.
       }
     }
@@ -107,12 +133,28 @@ async function checkSession(req, res, next) {
       req.cookies.refresh_token = effectiveRefreshToken
       req.cookies[REFRESH_SESSION_COOKIE_NAME] = refreshSessionToken
 
-      req.user = await verifyAPSToken(newAccessToken)
+      try {
+        req.user = await verifyAPSToken(newAccessToken)
+      } catch (tokenValidationError) {
+        if (!isTransientSessionError(tokenValidationError)) {
+          throw tokenValidationError
+        }
+
+        req.user = decodeIssuedApsTokenPayload(newAccessToken)
+      }
+
       return next()
     }
 
     return res.status(401).json({ message: "La sesión expiró. Inicia sesión nuevamente." })
   } catch (err) {
+    if (isTransientSessionError(err)) {
+      console.error("Session Validation Temporarily Unavailable:", err.response?.data || err.message)
+      return res.status(503).json({
+        message: "No fue posible validar la sesión por un problema temporal del servicio. Intenta nuevamente.",
+      })
+    }
+
     console.error("Session Refresh Failed:", err.response?.data || err.message)
 
     clearSessionCookies(res, cookieOptions)

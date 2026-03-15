@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useCookies } from "react-cookie";
 import {
   Blocks,
   Building2,
@@ -35,7 +34,6 @@ const NAVIGATION = [
 export default function AppLayout({ children, noPadding = false }) {
   const navigate = useNavigate();
   const location = useLocation();
-  const [cookies, , removeCookie] = useCookies(["access_token"]);
 
   const [userEmail, setUserEmail] = useState("");
   const [collapsed, setCollapsed] = useState(true);
@@ -78,7 +76,7 @@ export default function AppLayout({ children, noPadding = false }) {
 
   useEffect(() => {
     const loadProfile = async () => {
-      if (shouldSkipDevDuplicateFetch(`auth-userprofile:${cookies.access_token || "anon"}`)) return;
+      if (shouldSkipDevDuplicateFetch(`auth-userprofile:${location.pathname}`)) return;
 
       try {
         const res = await fetch(`${backendUrl}/auth/userprofile`, { credentials: "include" });
@@ -86,11 +84,17 @@ export default function AppLayout({ children, noPadding = false }) {
           setUserEmail("");
           if (isProtectedRoute) {
             clearProjectSessionContext();
-            navigate("/login");
+            navigate("/login", { replace: true });
           }
           return;
         }
         if (!res.ok) throw new Error("No auth");
+
+        const contentType = res.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) {
+          throw new Error("Invalid profile response");
+        }
+
         const json = await res.json();
         setUserEmail(json?.data?.email || "");
       } catch {
@@ -99,18 +103,17 @@ export default function AppLayout({ children, noPadding = false }) {
     };
 
     loadProfile();
-  }, [cookies.access_token, isProtectedRoute, navigate, shouldSkipDevDuplicateFetch]);
+  }, [isProtectedRoute, location.pathname, navigate, shouldSkipDevDuplicateFetch]);
 
   const handleLogout = async () => {
     try {
       await fetch(`${backendUrl}/auth/logout`, { method: "POST", credentials: "include" });
     } catch {
-      // ignore
+      // Ignore logout transport failures because the local UI state still must be cleared.
     }
     clearProjectSessionContext();
     setUserEmail("");
-    removeCookie("access_token", { path: "/" });
-    navigate("/login");
+    navigate("/login", { replace: true });
   };
 
   const isActiveNavItem = (item) => {
@@ -199,10 +202,12 @@ export default function AppLayout({ children, noPadding = false }) {
                 "w-full text-slate-400 transition-colors hover:bg-slate-800 hover:text-white",
                 collapsed && "justify-center px-0"
               )}
-              onClick={() => setCollapsed((v) => !v)}
+              onClick={() => setCollapsed((value) => !value)}
             >
               {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-              {!collapsed && <span className="ml-2 text-[10px] font-bold uppercase tracking-wider">Colapsar menú</span>}
+              {!collapsed && (
+                <span className="ml-2 text-[10px] font-bold uppercase tracking-wider">Colapsar menú</span>
+              )}
             </Button>
           </div>
         </aside>

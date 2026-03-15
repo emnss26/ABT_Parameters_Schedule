@@ -4,6 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Download, FileText, Plus, Save, Trash2 } from "lucide-react";
 
 const toText = (value) => String(value ?? "").trim();
+const toInputText = (value) => String(value ?? "");
 const isIsoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 
 const normalizeWbsCode = (value) => toText(value).replace(/\s+/g, "").replace(/\.+/g, ".").replace(/\.$/, "");
@@ -175,7 +176,7 @@ export default function WBSPlannerTable({
                       ) : (
                         <input
                           type="text"
-                          value={toText(row.code)}
+                          value={toInputText(row.code)}
                           onChange={(event) => onChangeField(row.id, "code", event.target.value)}
                           placeholder="Ej: 1.2.3"
                           className="h-8 w-full rounded border border-input bg-background px-2 text-xs font-mono"
@@ -189,7 +190,7 @@ export default function WBSPlannerTable({
                       ) : (
                         <input
                           type="text"
-                          value={toText(row.title)}
+                          value={toInputText(row.title)}
                           onChange={(event) => onChangeField(row.id, "title", event.target.value)}
                           placeholder="Nombre de actividad"
                           className="h-8 w-full rounded border border-input bg-background px-2 text-xs"
