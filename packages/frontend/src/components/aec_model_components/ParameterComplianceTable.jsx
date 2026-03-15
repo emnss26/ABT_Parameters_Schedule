@@ -136,15 +136,15 @@ const mapRowToExport = (row = {}) => {
   return {
     "dbId (crudo)": safeText(dbId),
     "Revit Element ID": safeText(revitElementId),
-    Categoria: safeText(category),
+    Categoría: safeText(category),
     Familia: safeText(familyName),
     "Nombre del elemento": safeText(elementName),
     "Marca de tipo": safeText(typeMark),
-    Descripcion: safeText(description),
+    Descripción: safeText(description),
     Modelo: safeText(model),
     Fabricante: safeText(manufacturer),
     "Codigo de ensamblaje": safeText(assemblyCode),
-    "Descripcion de ensamblaje": safeText(assemblyDescription),
+    "Descripción de ensamblaje": safeText(assemblyDescription),
     Cantidad: safeText(row.count),
     "Cumplimiento %": compliance,
   }
@@ -196,7 +196,7 @@ export default function ParameterComplianceTable({
     if (!exportRows.length) return
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" })
     doc.setFontSize(12)
-    doc.text(`Revision de parametros - ${activeCategory?.name || "Categoria"}`, 40, 30)
+    doc.text(`Revisión de parámetros - ${activeCategory?.name || "Categoría"}`, 40, 30)
     autoTable(doc, {
       startY: 40,
       styles: { fontSize: 7, cellPadding: 3 },
@@ -212,7 +212,7 @@ export default function ParameterComplianceTable({
       <div className="border-b border-border px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-foreground">
-            {discipline?.name || "Revision de parametros"}
+            {discipline?.name || "Revisión de parámetros"}
           </h3>
           <div className="flex items-center gap-2">
             <Button
@@ -222,7 +222,7 @@ export default function ParameterComplianceTable({
               onClick={() => onDeleteCheck(activeResult)}
               disabled={!activeCheckId || deletingActiveCheck}
             >
-              <Trash2 className="h-4 w-4" /> {deletingActiveCheck ? "Eliminando..." : "Eliminar revision"}
+              <Trash2 className="h-4 w-4" /> {deletingActiveCheck ? "Eliminando..." : "Eliminar revisión"}
             </Button>
             <Button size="sm" variant="outline" className="gap-1" onClick={handleExportExcel} disabled={!exportRows.length}>
               <Download className="h-4 w-4" /> Excel
@@ -286,15 +286,15 @@ export default function ParameterComplianceTable({
             <TableRow className="bg-muted/40">
               <TableHead className="w-[120px]">dbId (crudo)</TableHead>
               <TableHead className="w-[130px]">Revit Element ID</TableHead>
-              <TableHead className="min-w-[120px]">Categoria</TableHead>
+              <TableHead className="min-w-[120px]">Categoría</TableHead>
               <TableHead className="min-w-[140px]">Familia</TableHead>
               <TableHead className="min-w-[180px]">Nombre del elemento</TableHead>
               <TableHead className="min-w-[130px]">Marca de tipo</TableHead>
-              <TableHead className="min-w-[180px]">Descripcion</TableHead>
+              <TableHead className="min-w-[180px]">Descripción</TableHead>
               <TableHead className="min-w-[130px]">Modelo</TableHead>
               <TableHead className="min-w-[130px]">Fabricante</TableHead>
               <TableHead className="min-w-[130px]">Codigo de ensamblaje</TableHead>
-              <TableHead className="min-w-[170px]">Descripcion de ensamblaje</TableHead>
+              <TableHead className="min-w-[170px]">Descripción de ensamblaje</TableHead>
               <TableHead className="w-[80px] text-center">Cantidad</TableHead>
               <TableHead className="w-[120px] text-center">Cumplimiento</TableHead>
             </TableRow>

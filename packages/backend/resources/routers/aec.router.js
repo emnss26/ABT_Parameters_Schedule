@@ -3,7 +3,6 @@ const checkSession = require("../../middlewares/checkSession");
 
 const { GetAECProjects } = require("../controllers/aec_controllers/aec.projects.controller");
 const { GetAECModels } = require("../controllers/aec_controllers/aec.models.controller");
-const { GetAECProjectFolders } = require("../controllers/aec_controllers/aec.project.folders");
 const {
   GetAECModelParametersByCategory,
   SaveParameterCheck,
@@ -29,7 +28,7 @@ router.use(checkSession);
 
 router.get("/graphql-projects", GetAECProjects);
 router.get("/:projectId/graphql-models", GetAECModels);
-router.get("/:projectId/graphql-project-folders", GetAECProjectFolders);
+
 
 router.get("/:projectId/graphql-model-parameters", GetAECModelParametersByCategory);
 router.post("/:projectId/parameters/save-check", SaveParameterCheck);

@@ -18,6 +18,6 @@ router.get("/token", checkSession, GetToken)
 router.post("/logout", PostLogout)
 
 // User
-router.get("/userprofile", GetUserProfile)
+router.get("/userprofile", checkSession, GetUserProfile)
 
 module.exports = router

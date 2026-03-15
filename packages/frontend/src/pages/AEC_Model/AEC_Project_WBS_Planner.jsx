@@ -23,7 +23,7 @@ import {
   resolveProjectWbs4DViewerDbIdsForRows,
   teardownProjectWbs4DViewer,
 } from "@/utils/viewers/project-wbs-4d.viewer";
-import { getProjectNameFromSession } from "@/utils/projectSession";
+import { getProjectNameFromSession, resolveProjectSessionContext } from "@/utils/projectSession";
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL;
 const VIEWER_CONTAINER_ID = "WBS4DViewer";
@@ -445,7 +445,7 @@ const parseStructuredWbsRowsFromMatrix = (matrix = [], headerRowIndex = 0) => {
   const parsedRows = attachMatrixParseMeta(sortWbsRows(rows), { invalidRows });
   if (!parsedRows.length && invalidRows > 0 && !parsedRows.errorMessage) {
     parsedRows.errorMessage =
-      "Se detectaron filas WBS, pero ninguna fue valida. Revisa Nivel, Codigo, Actividad y fechas.";
+      "Se detectaron filas WBS, pero ninguna fue válida. Revisa Nivel, Código, Actividad y fechas.";
   }
   return parsedRows;
 };
@@ -822,12 +822,12 @@ const buildGanttRows = (rows = []) => {
 export default function AECProjectWBSPlannerPage() {
   const { projectId } = useParams();
   const selectionStorageKey = `wbs_planner_selected_model_${projectId || "unknown"}`;
-  const projectName = useMemo(() => getProjectNameFromSession(projectId), [projectId]);
 
   const [viewMode, setViewMode] = useState("viewer");
   const [wbsRows, setWbsRows] = useState([]);
   const [sourceFileName, setSourceFileName] = useState("");
   const [wbsSetId, setWbsSetId] = useState(null);
+  const [projectName, setProjectName] = useState(() => getProjectNameFromSession(projectId));
 
   const [models, setModels] = useState([]);
   const [loadingModels, setLoadingModels] = useState(false);
@@ -855,7 +855,7 @@ export default function AECProjectWBSPlannerPage() {
 
   const safeJson = async (res) => {
     const c = res.headers.get("content-type") || "";
-    if (!c.includes("application/json")) throw new Error((await res.text()).slice(0, 300) || "Respuesta no valida del servidor");
+    if (!c.includes("application/json")) throw new Error((await res.text()).slice(0, 300) || "Respuesta no válida del servidor");
     return res.json();
   };
 
@@ -889,7 +889,7 @@ export default function AECProjectWBSPlannerPage() {
   const importControlsDisabled = plannerControlsDisabled || savingWbs || loadingWbs;
   const matchDisabledReason = useMemo(() => {
     if (!selectedModelId || !wbsSetId) return "";
-    if (!selectedUrn) return "Selecciona un modelo con URN valida para cargar el visor.";
+    if (!selectedUrn) return "Selecciona un modelo con URN válida para cargar el visor.";
     if (viewMode !== "viewer") return "Abre Visor + tabla y espera a que el modelo cargue antes de emparejar.";
     if (loadingViewer) return "Espera a que el visor visible termine de cargar.";
     if (!viewerReady || !isProjectWbs4DViewerReady()) {
@@ -958,6 +958,23 @@ export default function AECProjectWBSPlannerPage() {
   const actualPctToday = useMemo(() => getWeightedPctAtDate(wbsLevel4Rows, todayIso, true), [wbsLevel4Rows, todayIso]);
   const deviationPctToday = actualPctToday - plannedPctToday;
 
+  useEffect(() => {
+    let cancelled = false;
+
+    setProjectName(getProjectNameFromSession(projectId));
+    resolveProjectSessionContext({ projectId, apiBase })
+      .then((context) => {
+        if (!cancelled) setProjectName(context?.projectName || "");
+      })
+      .catch(() => {
+        if (!cancelled) setProjectName("");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, apiBase]);
+
   const ensureModelsLoaded = useCallback(async () => {
     if (!projectId || models.length > 0) return;
     if (shouldSkipDevDuplicateFetch(`graphql-models:${pId}`)) return;
@@ -974,9 +991,8 @@ export default function AECProjectWBSPlannerPage() {
   }, [projectId, models.length, apiBase, pId, shouldSkipDevDuplicateFetch]);
 
   const fetchLatestWbs = useCallback(
-    async (modelId) => {
-      const q = toText(modelId) ? `?modelId=${encodeURIComponent(modelId)}` : "";
-      const res = await fetch(`${apiBase}/aec/${pId}/wbs/latest${q}`, { credentials: "include" });
+    async () => {
+      const res = await fetch(`${apiBase}/aec/${pId}/wbs/latest`, { credentials: "include" });
       const json = await safeJson(res);
       if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo cargar la WBS");
       return json;
@@ -1003,7 +1019,7 @@ export default function AECProjectWBSPlannerPage() {
       plannerStateRequestRef.current = requestId;
       setLoadingWbs(true);
       try {
-        const [wbsJson, matchJson] = await Promise.all([fetchLatestWbs(modelId), fetchLatestMatch(modelId)]);
+        const [wbsJson, matchJson] = await Promise.all([fetchLatestWbs(), fetchLatestMatch(modelId)]);
         if (plannerStateRequestRef.current !== requestId) return;
 
         if (wbsJson?.found) {
@@ -1035,11 +1051,9 @@ export default function AECProjectWBSPlannerPage() {
           headers: { "Content-Type": "application/json" },
           credentials: "include",
           body: JSON.stringify({
-            modelId: selectedModelId || null,
             name,
             sourceFileName,
             rows,
-            activateForModel: Boolean(selectedModelId),
           }),
         });
         const json = await safeJson(res);
@@ -1049,7 +1063,7 @@ export default function AECProjectWBSPlannerPage() {
         setSavingWbs(false);
       }
     },
-    [apiBase, pId, selectedModelId]
+    [apiBase, pId]
   );
 
   const saveEditableWbs = useCallback(async () => {
@@ -1059,7 +1073,7 @@ export default function AECProjectWBSPlannerPage() {
     }
 
     if (invalidEditableRowsCount > 0) {
-      toast.error("Corrige filas invalidas antes de guardar.");
+      toast.error("Corrige filas inválidas antes de guardar.");
       return;
     }
 
@@ -1099,7 +1113,7 @@ export default function AECProjectWBSPlannerPage() {
     }
 
     if (!selectedUrn) {
-      toast.warning("Selecciona un modelo con URN valida para extraer el snapshot del visor.");
+      toast.warning("Selecciona un modelo con URN válida para extraer el snapshot del visor.");
       return;
     }
 
@@ -1116,11 +1130,11 @@ export default function AECProjectWBSPlannerPage() {
       const matchableRows = Number(snapshotStats?.matchableRows) || 0;
 
       if (!snapshotRows.length) {
-        throw new Error("El viewer no devolvio nodos hoja utiles para el matching.");
+        throw new Error("El visor no devolvió nodos hoja útiles para el matching.");
       }
 
       if (matchableRows <= 0) {
-        throw new Error("El snapshot del viewer no contiene Assembly Code/Description suficientes para hacer match.");
+        throw new Error("El snapshot del visor no contiene Assembly Code/Description suficientes para hacer match.");
       }
 
       const res = await fetch(`${apiBase}/aec/${pId}/wbs/match/run`, {
@@ -1136,13 +1150,13 @@ export default function AECProjectWBSPlannerPage() {
       const json = await safeJson(res);
       if (!res.ok || !json.success) throw new Error(json?.message || json?.error || "No se pudo ejecutar el emparejamiento");
       toast.info(
-        `Snapshot del visor (visor_visible): hojas ${snapshotStats.totalLeafNodes || 0}, utiles ${snapshotStats.extractedRows || 0}, matcheables ${matchableRows}, omitidos ${snapshotStats.skippedRows || 0}`
+        `Snapshot del visor (visor_visible): hojas ${snapshotStats.totalLeafNodes || 0}, útiles ${snapshotStats.extractedRows || 0}, matcheables ${matchableRows}, omitidos ${snapshotStats.skippedRows || 0}`
       );
       toast.success(`Matching listo: ${json?.data?.matchedElements || 0}/${json?.data?.totalElements || 0}`);
       const latest = await fetchLatestMatch(selectedModelId);
       setMatchRun(latest?.found ? latest.data : null);
     } catch (err) {
-      toast.error(err?.message || "No se pudo ejecutar matching.");
+      toast.error(err?.message || "No se pudo ejecutar el matching.");
     } finally {
       setRunningMatch(false);
     }
@@ -1181,7 +1195,7 @@ export default function AECProjectWBSPlannerPage() {
       });
       await loadPlannerState(selectedModelId);
       if (Number(parsedRows?.invalidRows) > 0) {
-        toast.warning(`Se omitieron ${parsedRows.invalidRows} filas invalidas durante la importacion.`);
+        toast.warning(`Se omitieron ${parsedRows.invalidRows} filas inválidas durante la importación.`);
       }
       toast.success(successMessage(parsedRows.length));
     },
@@ -1198,7 +1212,7 @@ export default function AECProjectWBSPlannerPage() {
           file,
           parser: parseWbsRowsFromMatrix,
           emptyMessage:
-            "No se detectaron filas WBS validas. El archivo debe incluir Nivel, Codigo, Actividad, Inicio Planeado, Fin Planeado, Inicio Real, Fin Real, Costo y Duracion.",
+            "No se detectaron filas WBS válidas. El archivo debe incluir Nivel, Código, Actividad, Inicio Planeado, Fin Planeado, Inicio Real, Fin Real, Costo y Duración.",
           importName: "WBS Import",
           successMessage: (count) => `WBS guardada (${count} filas)`,
         });
@@ -1221,12 +1235,12 @@ export default function AECProjectWBSPlannerPage() {
           file,
           parser: parseProjectWbsRowsFromMatrix,
           emptyMessage:
-            "No se detectaron filas Project WBS validas. Se requiere Task Name y una columna WBS, Outline Number, Outline Level o ID.",
-          importName: "Project WBS Import",
-          successMessage: (count) => `Project WBS cargada (${count} filas)`,
+            "No se detectaron filas Project WBS válidas. Se requiere Task Name y una columna WBS, Outline Number, Outline Level o ID.",
+          importName: "Importación WBS de Project",
+          successMessage: (count) => `WBS de Project cargada (${count} filas)`,
         });
       } catch (err) {
-        toast.error(err?.message || "No se pudo cargar/guardar Project WBS");
+        toast.error(err?.message || "No se pudo cargar/guardar la WBS de Project");
       } finally {
         event.target.value = "";
       }
@@ -1458,7 +1472,7 @@ export default function AECProjectWBSPlannerPage() {
     if (!selectedModel) return setSelectedUrn("");
     const urn = getModelUrn(selectedModel);
     setSelectedUrn(urn);
-    if (urn && !hasViewerVersionUrn(urn)) toast.warning("Modelo sin fileVersionUrn valido.");
+    if (urn && !hasViewerVersionUrn(urn)) toast.warning("Modelo sin fileVersionUrn válido.");
   }, [selectedModel]);
 
   useEffect(() => {
@@ -1616,7 +1630,7 @@ export default function AECProjectWBSPlannerPage() {
 
         <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
           <div className="mb-3">
-            <h2 className="text-sm font-semibold text-foreground">Modos de visualizacion</h2>
+            <h2 className="text-sm font-semibold text-foreground">Modos de visualización</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} onClick={() => setViewMode("table")}>

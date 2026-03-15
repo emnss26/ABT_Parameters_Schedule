@@ -197,6 +197,16 @@ const similarityScore = (leftSet, rightSet) => {
 };
 
 const getActiveWbsSet = async ({ projectId, modelId }) => {
+  const projectWide = await knex("wbs_sets")
+    .where({
+      project_id: String(projectId),
+    })
+    .whereNull("model_id")
+    .orderBy("id", "desc")
+    .first();
+
+  if (projectWide) return projectWide;
+
   if (modelId) {
     const byBinding = await knex("wbs_model_bindings as b")
       .join("wbs_sets as s", "s.id", "b.wbs_set_id")
@@ -656,11 +666,9 @@ const buildByWbsSummary = (matches = [], wbsItems = []) => {
 const SaveProjectWbs = async (req, res, next) => {
   const { projectId } = req.params;
   const {
-    modelId = null,
     name = "WBS Import",
     sourceFileName = "",
     rows = [],
-    activateForModel = true,
   } = req.body || {};
 
   if (!projectId) return next({ status: 400, message: "Project ID is required" });
@@ -681,7 +689,7 @@ const SaveProjectWbs = async (req, res, next) => {
   try {
     const insertSetResult = await trx("wbs_sets").insert({
       project_id: String(projectId),
-      model_id: modelId ? String(modelId) : null,
+      model_id: null,
       name: toText(name) || "WBS Import",
       source_file_name: toText(sourceFileName) || null,
       status: "active",
@@ -709,21 +717,6 @@ const SaveProjectWbs = async (req, res, next) => {
     }));
 
     await knex.batchInsert("wbs_items", itemsToInsert, 500).transacting(trx);
-
-    if (modelId && activateForModel) {
-      await trx("wbs_model_bindings")
-        .where({
-          project_id: String(projectId),
-          model_id: String(modelId),
-        })
-        .del();
-
-      await trx("wbs_model_bindings").insert({
-        project_id: String(projectId),
-        model_id: String(modelId),
-        wbs_set_id: wbsSetId,
-      });
-    }
 
     await trx.commit();
 
@@ -815,7 +808,7 @@ const RunWbsModelMatching = async (req, res, next) => {
     if (!wbsSet) {
       return next({
         status: 404,
-        message: "No WBS data found for this project/model. Upload WBS first.",
+        message: "No WBS data found for this project. Upload WBS first.",
       });
     }
 

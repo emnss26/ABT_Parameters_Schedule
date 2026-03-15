@@ -11,9 +11,16 @@ const toInt = (value) => {
 }
 
 const getRefreshSessionSecret = () => {
-  const secret = String(process.env.SESSION_COOKIE_SECRET || config.aps.clientSecret || "").trim()
-  if (!secret) throw new Error("Missing refresh session secret")
-  return secret
+  const dedicatedSecret = String(process.env.SESSION_COOKIE_SECRET || "").trim()
+  if (dedicatedSecret) return dedicatedSecret
+
+  const isProduction = process.env.NODE_ENV === "production"
+  if (!isProduction) {
+    const devFallbackSecret = String(config.aps.clientSecret || "").trim()
+    if (devFallbackSecret) return devFallbackSecret
+  }
+
+  throw new Error("Missing SESSION_COOKIE_SECRET")
 }
 
 const buildRefreshSessionPayload = (sessionStartedAt = Date.now(), absoluteExpiresAt = 0) => {

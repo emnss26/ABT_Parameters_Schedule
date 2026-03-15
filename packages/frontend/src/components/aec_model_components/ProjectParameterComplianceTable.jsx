@@ -91,7 +91,7 @@ export default function ProjectParameterComplianceTable({
         "Total Analizado": row.totalElements,
         "Total Completo": row.fullyCompliant,
         "Cumplimiento %": row.averageCompliancePct,
-        "Ultima revision": formatDateTime(row.lastCheckAt),
+        "Última revisión": formatDateTime(row.lastCheckAt),
       })),
     [normalizedRows]
   )
@@ -169,7 +169,7 @@ export default function ProjectParameterComplianceTable({
               <TableHead className="w-[150px] text-right">Total Analizado</TableHead>
               <TableHead className="w-[150px] text-right">Total Completo</TableHead>
               <TableHead className="w-[140px] text-right">Cumplimiento %</TableHead>
-              <TableHead className="min-w-[180px]">Ultima revision</TableHead>
+              <TableHead className="min-w-[180px]">Última revisión</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>

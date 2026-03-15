@@ -54,7 +54,7 @@ export default function AECProjectsPage() {
         setProjects(result.data?.aecProjects || []);
         setError("");
       } catch {
-        setError("No se pudieron cargar los proyectos. Revisa tu conexion.");
+        setError("No se pudieron cargar los proyectos. Revisa tu conexión.");
       } finally {
         setLoading(false);
       }
@@ -127,7 +127,7 @@ export default function AECProjectsPage() {
                             className="whitespace-nowrap rounded-lg bg-[rgb(170,32,47)] px-3 py-2 text-[11px] font-semibold text-white shadow-sm transition-all duration-300 hover:bg-[rgb(150,28,42)] hover:shadow-md active:scale-95"
                             onClick={() => openProject(project, "parameter-checker")}
                           >
-                            Revision de parametros
+                            Revisión de parámetros
                           </button>
                           <button
                             className="whitespace-nowrap rounded-lg border border-[rgb(170,32,47)] px-3 py-2 text-[11px] font-semibold text-[rgb(170,32,47)] shadow-sm transition-all duration-300 hover:bg-[rgb(170,32,47)] hover:text-white hover:shadow-md active:scale-95"

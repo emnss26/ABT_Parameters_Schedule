@@ -23,7 +23,7 @@ import {
   simpleViewer,
   teardownSimpleViewer,
 } from "@/utils/viewers/simpleViewer"
-import { getProjectNameFromSession } from "@/utils/projectSession"
+import { getProjectNameFromSession, resolveProjectSessionContext } from "@/utils/projectSession"
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL
 const VIEWER_CONTAINER_ID = "TADSimpleViewer"
@@ -74,11 +74,11 @@ export default function AECModelParameterCheckerPage() {
   const requestDedupRef = useRef(new Map())
 
   const selectionStorageKey = `parameter_checker_selected_model_${projectId || "unknown"}`
-  const projectName = useMemo(() => getProjectNameFromSession(projectId), [projectId])
 
   const [models, setModels] = useState([])
   const [loadingModels, setLoadingModels] = useState(false)
   const [isModelDialogOpen, setIsModelDialogOpen] = useState(false)
+  const [projectName, setProjectName] = useState(() => getProjectNameFromSession(projectId))
 
   const [selectedModelId, setSelectedModelId] = useState(null)
   const [selectedUrn, setSelectedUrn] = useState("")
@@ -108,7 +108,7 @@ export default function AECModelParameterCheckerPage() {
     const contentType = res.headers.get("content-type") || ""
     if (!contentType.includes("application/json")) {
       const raw = await res.text()
-      throw new Error(raw.slice(0, 300) || "Respuesta no valida del servidor")
+      throw new Error(raw.slice(0, 300) || "Respuesta no válida del servidor")
     }
     return res.json()
   }
@@ -202,6 +202,23 @@ export default function AECModelParameterCheckerPage() {
     }
   }, [analysisByDiscipline])
 
+  useEffect(() => {
+    let cancelled = false
+
+    setProjectName(getProjectNameFromSession(projectId))
+    resolveProjectSessionContext({ projectId, apiBase })
+      .then((context) => {
+        if (!cancelled) setProjectName(context?.projectName || "")
+      })
+      .catch(() => {
+        if (!cancelled) setProjectName("")
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [projectId, apiBase])
+
   const ensureModelsLoaded = useCallback(async () => {
     if (!projectId || models.length > 0) return
     if (shouldSkipDevDuplicateFetch(`graphql-models:${pId}`)) return
@@ -232,7 +249,7 @@ export default function AECModelParameterCheckerPage() {
       const res = await fetch(endpoint, { credentials: "include" })
       const json = await safeJson(res)
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "No se pudo cargar la revision de parametros")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la revisión de parámetros")
       }
 
       const rows = Array.isArray(json?.data?.rows) ? json.data.rows : []
@@ -260,7 +277,7 @@ export default function AECModelParameterCheckerPage() {
       const json = await safeJson(res)
 
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "No se pudo cargar la ultima revision guardada")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la última revisión guardada")
       }
 
       if (!json.found) return null
@@ -291,7 +308,7 @@ export default function AECModelParameterCheckerPage() {
       const json = await safeJson(res)
 
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "No se pudo cargar la ultima disciplina revisada")
+        throw new Error(json?.message || json?.error || "No se pudo cargar la última disciplina revisada")
       }
 
       return json
@@ -341,7 +358,7 @@ export default function AECModelParameterCheckerPage() {
 
       const json = await safeJson(res)
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "No se pudo guardar la revision de parametros")
+        throw new Error(json?.message || json?.error || "No se pudo guardar la revisión de parámetros")
       }
 
       return json?.data || null
@@ -359,7 +376,7 @@ export default function AECModelParameterCheckerPage() {
 
       const json = await safeJson(res)
       if (!res.ok || !json.success) {
-        throw new Error(json?.message || json?.error || "No se pudo eliminar la revision de parametros")
+        throw new Error(json?.message || json?.error || "No se pudo eliminar la revisión de parámetros")
       }
 
       return json?.data || null
@@ -453,7 +470,7 @@ export default function AECModelParameterCheckerPage() {
                 categoryName: category.name,
                 categoryQuery: category.query,
                 status: "error",
-                error: err?.message || "Error cargando historial desde DB.",
+                error: err?.message || "Error cargando historial desde BD.",
                 rows: [],
                 summary: {
                   totalElements: 0,
@@ -603,7 +620,7 @@ export default function AECModelParameterCheckerPage() {
           } catch (saveErr) {
             persistenceErrors.push({
               categoryName: category.name,
-              message: saveErr?.message || "No se pudo guardar en DB.",
+              message: saveErr?.message || "No se pudo guardar en BD.",
             })
           }
 
@@ -707,11 +724,11 @@ export default function AECModelParameterCheckerPage() {
 
       const okCategories = categoryDraft.filter((entry) => entry.status === "success").length
       if (okCategories === categories.length && persistenceErrors.length === 0) {
-        toast.success(`Analisis completado para ${discipline.name} (${okCategories}/${categories.length}).`)
+        toast.success(`Análisis completado para ${discipline.name} (${okCategories}/${categories.length}).`)
       } else {
         const persistInfo =
-          persistenceErrors.length > 0 ? ` Guardado DB con errores en ${persistenceErrors.length} categorias.` : ""
-        toast.warning(`Analisis completado con incidencias para ${discipline.name} (${okCategories}/${categories.length}).${persistInfo}`)
+          persistenceErrors.length > 0 ? ` Guardado en BD con errores en ${persistenceErrors.length} categorías.` : ""
+        toast.warning(`Análisis completado con incidencias para ${discipline.name} (${okCategories}/${categories.length}).${persistInfo}`)
       }
     } finally {
       if (analysisRunRef.current === runId) {
@@ -732,11 +749,11 @@ export default function AECModelParameterCheckerPage() {
       const checkId = Number(activeResult?.checkData?.id) || null
       if (!checkId || !selectedModelId || !selectedDiscipline) return
 
-      const categoryName = activeResult?.categoryName || "esta categoria"
+      const categoryName = activeResult?.categoryName || "esta categoría"
       const confirmed =
         typeof window === "undefined"
           ? true
-          : window.confirm(`Se eliminara el check guardado de ${categoryName}. Esta accion no se puede deshacer.`)
+          : window.confirm(`Se eliminará el check guardado de ${categoryName}. Esta acción no se puede deshacer.`)
 
       if (!confirmed) return
 
@@ -745,9 +762,9 @@ export default function AECModelParameterCheckerPage() {
         await deleteParameterCheck({ checkId })
         await hydrateDisciplineFromDb({ modelId: selectedModelId, discipline: selectedDiscipline })
         await fetchProjectComplianceSummary()
-        toast.success("Revision eliminada correctamente.")
+        toast.success("Revisión eliminada correctamente.")
       } catch (err) {
-        toast.error(err?.message || "No se pudo eliminar la revision.")
+        toast.error(err?.message || "No se pudo eliminar la revisión.")
       } finally {
         setDeletingCheckId(null)
       }
@@ -775,7 +792,7 @@ export default function AECModelParameterCheckerPage() {
     try {
       const resolution = await resolveViewerDbIdsForRows(activeCategoryRows)
       if (!resolution.dbIds.length) {
-        throw new Error("No se pudieron resolver dbIds del viewer para esta categoria.")
+        throw new Error("No se pudieron resolver dbIds del visor para esta categoría.")
       }
 
       const isolated = isolateViewerDbIds(resolution.dbIds)
@@ -938,7 +955,7 @@ export default function AECModelParameterCheckerPage() {
         <div className="border-b border-border pb-6">
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold tracking-tight text-foreground">Revision de parametros del modelo</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground">Revisión de parámetros del modelo</h1>
               <Badge variant="outline" className="border-primary/30 bg-primary/5 text-primary">
                 V.01
               </Badge>
@@ -979,17 +996,17 @@ export default function AECModelParameterCheckerPage() {
                 ) : null}
                 {isLoadingHistory ? (
                   <Badge variant="secondary" className="text-xs">
-                    Cargando historial desde DB...
+                    Cargando historial desde BD...
                   </Badge>
                 ) : null}
                 {isResolvingLastDiscipline ? (
                   <Badge variant="secondary" className="text-xs">
-                    Resolviendo ultima disciplina analizada...
+                    Resolviendo última disciplina analizada...
                   </Badge>
                 ) : null}
                 {controlsDisabledByViewMode ? (
                   <Badge variant="outline" className="text-xs">
-                    Los controles solo estan disponibles en Revision
+                    Los controles solo están disponibles en Revisión
                   </Badge>
                 ) : null}
               </div>

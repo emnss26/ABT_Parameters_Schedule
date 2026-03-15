@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { clearProjectSessionContext } from "@/utils/projectSession";
 
 const backendUrl = import.meta.env.VITE_API_BACKEND_BASE_URL;
 
@@ -43,6 +44,10 @@ export default function AppLayout({ children, noPadding = false }) {
   const projectRouteMatch = location.pathname.match(/^\/(parameter-checker|wbs-planner)\/([^/]+)/);
   const activeProjectId = projectRouteMatch?.[2] || null;
   const showSidebar = Boolean(activeProjectId);
+  const isProtectedRoute =
+    location.pathname === "/aec-projects" ||
+    location.pathname.startsWith("/parameter-checker/") ||
+    location.pathname.startsWith("/wbs-planner/");
 
   const navigationItems = useMemo(() => {
     if (!activeProjectId) return NAVIGATION;
@@ -50,7 +55,7 @@ export default function AppLayout({ children, noPadding = false }) {
       ...NAVIGATION,
       {
         id: "parameter-checker",
-        label: "Revision de parametros",
+        label: "Revisión de parámetros",
         icon: Blocks,
         href: `/parameter-checker/${activeProjectId}`,
       },
@@ -77,6 +82,14 @@ export default function AppLayout({ children, noPadding = false }) {
 
       try {
         const res = await fetch(`${backendUrl}/auth/userprofile`, { credentials: "include" });
+        if (res.status === 401 || res.status === 403) {
+          setUserEmail("");
+          if (isProtectedRoute) {
+            clearProjectSessionContext();
+            navigate("/login");
+          }
+          return;
+        }
         if (!res.ok) throw new Error("No auth");
         const json = await res.json();
         setUserEmail(json?.data?.email || "");
@@ -86,7 +99,7 @@ export default function AppLayout({ children, noPadding = false }) {
     };
 
     loadProfile();
-  }, [cookies.access_token, shouldSkipDevDuplicateFetch]);
+  }, [cookies.access_token, isProtectedRoute, navigate, shouldSkipDevDuplicateFetch]);
 
   const handleLogout = async () => {
     try {
@@ -94,6 +107,8 @@ export default function AppLayout({ children, noPadding = false }) {
     } catch {
       // ignore
     }
+    clearProjectSessionContext();
+    setUserEmail("");
     removeCookie("access_token", { path: "/" });
     navigate("/login");
   };
@@ -187,7 +202,7 @@ export default function AppLayout({ children, noPadding = false }) {
               onClick={() => setCollapsed((v) => !v)}
             >
               {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
-              {!collapsed && <span className="ml-2 text-[10px] font-bold uppercase tracking-wider">Colapsar menu</span>}
+              {!collapsed && <span className="ml-2 text-[10px] font-bold uppercase tracking-wider">Colapsar menú</span>}
             </Button>
           </div>
         </aside>
@@ -236,7 +251,7 @@ export default function AppLayout({ children, noPadding = false }) {
                   onClick={handleLogout}
                   className="cursor-pointer text-red-600 focus:bg-red-50 focus:text-red-600"
                 >
-                  <LogOut className="mr-2 h-4 w-4" /> Cerrar sesion
+                  <LogOut className="mr-2 h-4 w-4" /> Cerrar sesión
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

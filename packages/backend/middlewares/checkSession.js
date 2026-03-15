@@ -34,7 +34,7 @@ async function checkSession(req, res, next) {
   const cookieOptions = buildCookieOptions()
 
   if (!accessToken && !refreshToken) {
-    return res.status(401).json({ message: "No active session. Please log in." })
+    return res.status(401).json({ message: "No hay una sesión activa. Inicia sesión nuevamente." })
   }
 
   try {
@@ -61,14 +61,16 @@ async function checkSession(req, res, next) {
     if (refreshToken) {
       if (!refreshSessionToken) {
         clearSessionCookies(res, cookieOptions)
-        return res.status(401).json({ message: "Session expired. Please log in again." })
+        return res.status(401).json({
+          message: "La sesión anterior ya no es válida con la política actual. Inicia sesión nuevamente.",
+        })
       }
 
       const refreshSession = verifyRefreshSession(refreshSessionToken)
       const remainingRefreshSessionMs = getRemainingRefreshSessionMs(refreshSession)
       if (remainingRefreshSessionMs <= 0) {
         clearSessionCookies(res, cookieOptions)
-        return res.status(401).json({ message: "Session expired. Please log in again." })
+        return res.status(401).json({ message: "La sesión expiró. Inicia sesión nuevamente." })
       }
 
       const params = new URLSearchParams()
@@ -109,13 +111,13 @@ async function checkSession(req, res, next) {
       return next()
     }
 
-    return res.status(401).json({ message: "Session expired. Please log in again." })
+    return res.status(401).json({ message: "La sesión expiró. Inicia sesión nuevamente." })
   } catch (err) {
     console.error("Session Refresh Failed:", err.response?.data || err.message)
 
     clearSessionCookies(res, cookieOptions)
 
-    return res.status(401).json({ message: "Invalid session. Please log in." })
+    return res.status(401).json({ message: "La sesión es inválida. Inicia sesión nuevamente." })
   }
 }
 
