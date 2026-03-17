@@ -11,26 +11,26 @@ const app = express();
 
 const isProduction = config.env === "production";
 const jsonBodyLimit = process.env.JSON_BODY_LIMIT || "15mb";
-const STATE_CHANGING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const BASE_PATH = "/ControlPlanos";
 
-const toOrigin = (value) => {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
+// --- CAMBIO CLAVE PARA IIS ---
+const BASE_PATH = "/SeguimientoParametros";
 
-  try {
-    return new URL(raw).origin;
-  } catch {
-    return "";
+// Obtener IP real detrás de IIS / Proxies
+const getClientIp = (req) => {
+  const forwardedFor = req.headers["x-forwarded-for"];
+  if (typeof forwardedFor === "string" && forwardedFor.trim()) {
+    return forwardedFor.split(",")[0].trim();
   }
-};
-
-const frontendOrigin = toOrigin(config.frontendUrl);
-
-const getRequestOrigin = (req) => {
-  const originHeader = toOrigin(req.headers.origin);
-  if (originHeader) return originHeader;
-  return toOrigin(req.headers.referer);
+  const realIp = req.headers["x-real-ip"];
+  if (typeof realIp === "string" && realIp.trim()) {
+    return realIp.trim();
+  }
+  return (
+    req.ip ||
+    req.socket?.remoteAddress ||
+    req.connection?.remoteAddress ||
+    "unknown-ip"
+  );
 };
 
 app.set("trust proxy", 1);
@@ -48,6 +48,8 @@ app.use(
     max: 300,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { ip: false },
+    keyGenerator: (req) => getClientIp(req),
     message: {
       success: false,
       message: "Demasiadas solicitudes. Intenta nuevamente más tarde.",
@@ -59,37 +61,25 @@ app.use(express.json({ limit: jsonBodyLimit }));
 app.use(express.urlencoded({ extended: false, limit: jsonBodyLimit }));
 app.use(cookieParser());
 
+// Cors configuration
 app.use(
   cors({
-    origin(origin, callback) {
-      
-      if (!origin) return callback(null, true);
-
-      const normalizedOrigin = toOrigin(origin);
-      if (normalizedOrigin && normalizedOrigin === frontendOrigin) {
-        return callback(null, true);
-      }
-
-      return callback(new Error("CORS: origen no permitido."));
-    },
+    origin: config.frontendUrl,
     credentials: true,
   })
 );
 
-// Protección CSRF/origin exacta para métodos que cambian estado
+// Protección CSRF
 app.use((req, res, next) => {
-  if (isProduction && STATE_CHANGING_METHODS.has(req.method)) {
-    const requestOrigin = getRequestOrigin(req);
-
-    if (!frontendOrigin || !requestOrigin || requestOrigin !== frontendOrigin) {
-      return res.status(403).json({
-        success: false,
-        message: "Protección CSRF: origen no permitido.",
-      });
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
+    const origin = req.headers.origin || req.headers.referer;
+    if (isProduction && origin && !origin.startsWith(config.frontendUrl)) {
+      return res
+        .status(403)
+        .json({ success: false, message: "CSRF Protection: Origin not allowed" });
     }
   }
-
-  return next();
+  next();
 });
 
 if (!isProduction) {
@@ -98,60 +88,47 @@ if (!isProduction) {
 
 app.disable("etag");
 
-// Routers
+// Routers de la nueva App
 const authRouter = require("./resources/routers/auth.router");
 const aecRouter = require("./resources/routers/aec.router");
 const accRouter = require("./resources/routers/acc.router");
 
-
-// APIs en raíz y en /ControlPlanos para compatibilidad local + IIS
+// APIs en raíz y en /SeguimientoParametros para compatibilidad local + IIS
 app.use(["/auth", `${BASE_PATH}/auth`], authRouter);
 app.use(["/aec", `${BASE_PATH}/aec`], aecRouter);
 app.use(["/acc", `${BASE_PATH}/acc`], accRouter);
-
 
 // Health
 app.get(["/health", `${BASE_PATH}/health`], (_req, res) => {
   res.json({
     success: true,
-    message: "Backend API is online",
+    message: "Backend API is online 🚀",
     env: config.env,
+    app: "SeguimientoParametros"
   });
 });
 
-
+// Servir frontend estático
 const publicPath = path.join(__dirname, "public");
-const indexPath = path.join(publicPath, "index.html");
-
-
 app.use(express.static(publicPath));
 app.use(BASE_PATH, express.static(publicPath));
 
-
+// Fallback para React Router (SPA)
 app.get("*", (req, res, next) => {
   if (req.method !== "GET") return next();
 
   const requestPath = req.path || "";
-
   const isApiPath =
     requestPath.startsWith("/auth") ||
     requestPath.startsWith("/aec") ||
     requestPath.startsWith("/acc") ||
-    requestPath.startsWith("/plans") ||
-
     requestPath.startsWith(`${BASE_PATH}/auth`) ||
     requestPath.startsWith(`${BASE_PATH}/aec`) ||
-    requestPath.startsWith(`${BASE_PATH}/acc`) ||
-    requestPath.startsWith(`${BASE_PATH}/plans`) ;
+    requestPath.startsWith(`${BASE_PATH}/acc`);
 
   if (isApiPath) return next();
 
-
-  if (requestPath === "/" || requestPath.startsWith(BASE_PATH)) {
-    return res.sendFile(indexPath);
-  }
-
-  return next();
+  res.sendFile(path.join(publicPath, "index.html"));
 });
 
 if (!isProduction) {

@@ -16,7 +16,7 @@ import { Toaster } from  "@/components/ui/sonner"
 function App() {
   return (
     <CookiesProvider>
-      <Router>
+      <Router basename="/SeguimientoParametros">
         <Routes>
           <Route exact path="/" element={<HomePage />} />
           <Route path="/login" element={<LoginPage />} />
