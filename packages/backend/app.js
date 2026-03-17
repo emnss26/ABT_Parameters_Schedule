@@ -118,13 +118,15 @@ app.get("*", (req, res, next) => {
   if (req.method !== "GET") return next();
 
   const requestPath = req.path || "";
+  
+ 
   const isApiPath =
-    requestPath.startsWith("/auth") ||
-    requestPath.startsWith("/aec") ||
-    requestPath.startsWith("/acc") ||
-    requestPath.startsWith(`${BASE_PATH}/auth`) ||
-    requestPath.startsWith(`${BASE_PATH}/aec`) ||
-    requestPath.startsWith(`${BASE_PATH}/acc`);
+    requestPath.startsWith("/auth/") || requestPath === "/auth" ||
+    requestPath.startsWith("/aec/") || requestPath === "/aec" ||
+    requestPath.startsWith("/acc/") || requestPath === "/acc" ||
+    requestPath.startsWith(`${BASE_PATH}/auth/`) || requestPath === `${BASE_PATH}/auth` ||
+    requestPath.startsWith(`${BASE_PATH}/aec/`) || requestPath === `${BASE_PATH}/aec` ||
+    requestPath.startsWith(`${BASE_PATH}/acc/`) || requestPath === `${BASE_PATH}/acc`;
 
   if (isApiPath) return next();
 

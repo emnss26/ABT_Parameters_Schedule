@@ -21,7 +21,7 @@ export default function LoginPage() {
       <div className="grid h-full grid-cols-1 bg-white md:grid-cols-2">
         <div className="flex items-center justify-center p-6">
           <img
-            src="/Abitat_img.png"
+            src="/SeguimientoParametros/Abitat_img.png"
             alt="Abitat Construction Solutions"
             className="w-auto max-h-[220px] object-contain md:max-h-[280px]"
             style={{ filter: "drop-shadow(0 8px 24px rgba(0,0,0,0.10))" }}

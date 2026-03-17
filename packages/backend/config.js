@@ -57,7 +57,7 @@ for (const key of REQUIRED_ENV_VARS) {
   }
 }
 
-const dbPort = Number.parseInt(process.env.DB_PORT || "3306", 10);
+const dbPort = Number.parseInt(process.env.DB_PORT || "3307", 10);
 const frontendUrls =
   VALID_FRONTEND_URLS.length > 0 ? VALID_FRONTEND_URLS : [FALLBACK_FRONTEND_URL];
 const frontendOrigins = [...new Set(frontendUrls.map((value) => new URL(value).origin))];

@@ -89,7 +89,7 @@ export default function AECProjectsPage() {
       <div className="grid min-h-[80vh] grid-cols-1 items-center gap-8 p-6 lg:grid-cols-2">
         <div className="flex animate-in items-center justify-center fade-in duration-700 slide-in-from-left-10">
           <img
-            src="/Abitat_img.png"
+            src="/SeguimientoParametros/Abitat_img.png"
             alt="Abitat Construction Solutions"
             className="max-h-[220px] w-auto object-contain drop-shadow-xl transition-transform duration-500 hover:scale-105"
           />

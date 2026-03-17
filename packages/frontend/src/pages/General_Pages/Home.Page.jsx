@@ -9,7 +9,7 @@ export default function HomePage() {
     <AppLayout noPadding>
       <div className="flex min-h-screen flex-col items-center justify-center bg-white">
         <img
-          src="/Abitat_img.png"
+          src="/SeguimientoParametros/Abitat_img.png"
           alt="Abitat Construction Solutions"
           className="mb-6 max-h-[160px] w-auto object-contain md:max-h-[180px]"
           style={{ filter: "drop-shadow(0 8px 24px rgba(0,0,0,0.10))" }}
